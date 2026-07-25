@@ -2001,16 +2001,21 @@ function rVerify() {
     </div>
     <div class="nav-row no-print">
       <button class="btn-back" onclick="S.screen='review';render()">← Back</button>
-      <button class="btn-next purple" onclick="finalise()" ${S.supName?"":"disabled"}>Finalise Report →</button>
-    </div>`;
+      <button class="btn-next purple" onclick="finalise()" ${(S.supName && verN===allKeys.length)?"":"disabled"}>Finalise Report →</button>
+    </div>
+    ${verN<allKeys.length ? `<div class="alert" style="margin-top:10px;">⚠ Verify all ${allKeys.length} entries (${allKeys.length-verN} remaining) before finalising.</div>` : ""}`;
 }
 
 function toggleVerify(k) { S.verified[k] = !S.verified[k]; render(); }
 function verifyAll()     { allEntryKeys().forEach(k => S.verified[k] = true); render(); }
 function finalise() {
   if (!S.supName) { alert("Please select a supervisor."); return; }
+  const allKeys = allEntryKeys();
+  const unverifiedN = allKeys.filter(k => !S.verified[k]).length;
+  if (unverifiedN > 0) { alert(`Please verify all entries first — ${unverifiedN} still unverified.`); return; }
   S.finalisedAt = new Date().toLocaleString("en-IN");
   S.screen = "report"; render();
+  submitToSheet(); // fires automatically once the report is finalised — no manual step needed
 }
 
 // ═══════════════════════════════════════════════
@@ -2069,8 +2074,11 @@ function buildSheetRows() {
   }).filter(Boolean);
 }
 
-async function submitToSheet() {
-  S.submitStatus = "loading"; S.submitError = ""; render();
+async function submitToSheet(isRetry) {
+  // Fires automatically on finalise (and on resume, if it never succeeded).
+  // On failure, silently retries once after a short delay before surfacing an error —
+  // this rides out brief factory WiFi hiccups without bothering anyone.
+  if (!isRetry) { S.submitStatus = "loading"; S.submitError = ""; render(); }
   try {
     const rows = buildSheetRows();
     if (!rows.length) throw new Error("No rounds have data to submit.");
@@ -2085,11 +2093,16 @@ async function submitToSheet() {
       throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
     }
     S.submitStatus = "done";
+    render();
   } catch (err) {
+    if (!isRetry) {
+      setTimeout(() => submitToSheet(true), 4000);
+      return;
+    }
     S.submitStatus = "error";
     S.submitError = err.message;
+    render();
   }
-  render();
 }
 
 function exportToLog() {
@@ -2158,11 +2171,11 @@ function rReport() {
   }).join("");
 
   const submitHtml = S.submitStatus === "loading"
-    ? `<div class="alert">⏳ Submitting to Google Sheet…</div>`
+    ? `<div class="alert">⏳ Saving to Google Sheet…</div>`
     : S.submitStatus === "done"
-    ? `<div class="alert green">✅ Submitted to Google Sheet.</div>`
+    ? `<div class="alert green">✅ Saved to Google Sheet.</div>`
     : S.submitStatus === "error"
-    ? `<div class="alert">⚠ Submit failed: ${(S.submitError||"").replace(/</g,"&lt;")} · <span style="text-decoration:underline;cursor:pointer;" onclick="submitToSheet()">Retry</span></div>`
+    ? `<div class="alert">⚠ Couldn't save automatically: ${(S.submitError||"").replace(/</g,"&lt;")} · <span style="text-decoration:underline;cursor:pointer;" onclick="submitToSheet()">Retry</span></div>`
     : "";
 
   return `
@@ -2200,9 +2213,6 @@ function rReport() {
       </div>
     </div>
     <div class="nav-row no-print">
-      <button class="btn-outline" onclick="submitToSheet()" style="background:#eff6ff;color:#1d4ed8;border-color:#2563eb;" ${S.submitStatus==="loading"?"disabled":""}>
-        📤  ${S.submitStatus==="done"?"Re-submit to Google Sheet":"Submit to Google Sheet"}
-      </button>
       <button class="btn-outline" onclick="window.print()">🖨  Print / Save PDF</button>
       <button class="btn-outline" onclick="exportToLog()" style="background:#f0fdf4;color:#15803d;border-color:#16a34a;">
         📥  Export to Inspection Log
@@ -2348,6 +2358,9 @@ function fmtSavedAt(iso) {
 function resumeSession(saved) {
   S = saved;
   render();
+  if (S.screen === "report" && S.submitStatus !== "done") {
+    submitToSheet();
+  }
 }
 function discardSession() {
   clearState();
