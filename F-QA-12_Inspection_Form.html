@@ -175,44 +175,69 @@ select:focus, input[type="date"]:focus { border-color: #2563eb; }
 const PRODUCTS = {
   "12ESBB45": {
     label: "12ESBB45",
-    desc:  "",
+    desc:  "SS Braid + Brass Nut",
     extruder: {
       od: "11.00–12.20 mm",
       odBands: [
-        { label:"Below  <11.00 ✗", r:"FAIL" },
-        { label:"11.00–11.09",     r:"PASS" },
-        { label:"11.10–11.19",     r:"PASS" },
-        { label:"11.20–11.29",     r:"PASS" },
-        { label:"11.30–11.39",     r:"PASS" },
-        { label:"11.40–11.49",     r:"PASS" },
-        { label:"11.50–11.59",     r:"PASS" },
-        { label:"11.60–11.69",     r:"PASS" },
-        { label:"11.70–11.79",     r:"PASS" },
-        { label:"11.80–11.89",     r:"PASS" },
-        { label:"11.90–11.99",     r:"PASS" },
-        { label:"12.00–12.09",     r:"PASS" },
-        { label:"12.10–12.19",     r:"PASS" },
-        { label:"Above  >12.20 ✗", r:"FAIL" }
+        { label:"<11.00 FAIL", r:"FAIL" },
+        { label:"11.00-11.09", r:"PASS" },
+        { label:"11.10-11.19", r:"PASS" },
+        { label:"11.20-11.29", r:"PASS" },
+        { label:"11.30-11.39", r:"PASS" },
+        { label:"11.40-11.49", r:"PASS" },
+        { label:"11.50-11.59", r:"PASS" },
+        { label:"11.60-11.69", r:"PASS" },
+        { label:"11.70-11.79", r:"PASS" },
+        { label:"11.80-11.89", r:"PASS" },
+        { label:"11.90-11.99", r:"PASS" },
+        { label:"12.00-12.09", r:"PASS" },
+        { label:"12.10-12.19", r:"PASS" },
+        { label:">12.20 FAIL", r:"FAIL" }
       ],
       id: "8.00–8.60 mm",
       idBands: [
-        { label:"Below  <8.00 ✗",  r:"FAIL" },
-        { label:"8.00–8.09",       r:"PASS" },
-        { label:"8.10–8.19",       r:"PASS" },
-        { label:"8.20–8.29",       r:"PASS" },
-        { label:"8.30–8.39",       r:"PASS" },
-        { label:"8.40–8.49",       r:"PASS" },
-        { label:"8.50–8.59",       r:"PASS" },
-        { label:"Above  >8.60 ✗",  r:"FAIL" }
+        { label:"<8.00 FAIL", r:"FAIL" },
+        { label:"8.00-8.09", r:"PASS" },
+        { label:"8.10-8.19", r:"PASS" },
+        { label:"8.20-8.29", r:"PASS" },
+        { label:"8.30-8.39", r:"PASS" },
+        { label:"8.40-8.49", r:"PASS" },
+        { label:"8.50-8.59", r:"PASS" },
+        { label:">8.60 FAIL", r:"FAIL" }
       ]
     },
     braiding: {
-      od: "13.00–14.00 mm", pitch: "2.00–2.50 mm", machines: 18,
+      od: "11.20–12.51 mm", pitch: "2.00–2.50 mm", machines: 18,
       odBands: [
-        { label:"13.00–13.25", r:"PASS" },
-        { label:"13.26–13.50", r:"PASS" },
-        { label:"13.51–13.75", r:"PASS" },
-        { label:"13.76–14.00", r:"PASS" }
+        { label:"<11.20", r:"PASS" },
+        { label:"11.21-11.30", r:"PASS" },
+        { label:"11.31-11.40", r:"PASS" },
+        { label:"11.41-11.50", r:"PASS" },
+        { label:"11.51-11.60", r:"PASS" },
+        { label:"11.61-11.70", r:"PASS" },
+        { label:"11.71-11.80", r:"PASS" },
+        { label:"11.81-11.90", r:"PASS" },
+        { label:"11.91-12.00", r:"PASS" },
+        { label:"12.01-12.10", r:"PASS" },
+        { label:"12.11-12.20", r:"PASS" },
+        { label:"12.21-12.30", r:"PASS" },
+        { label:"12.31-12.40", r:"PASS" },
+        { label:"12.41-12.50", r:"PASS" },
+        { label:">12.51", r:"PASS" }
+      ]
+    },
+    cutting: {
+      len: "415–451 mm",
+      lenBands: [
+        { label:"<415", r:"PASS" },
+        { label:"416-420", r:"PASS" },
+        { label:"421-425", r:"PASS" },
+        { label:"426-430", r:"PASS" },
+        { label:"431-435", r:"PASS" },
+        { label:"436-440", r:"PASS" },
+        { label:"441-445", r:"PASS" },
+        { label:"446-450", r:"PASS" },
+        { label:">451", r:"PASS" }
       ]
     },
     crimping: {
@@ -236,99 +261,71 @@ const PRODUCTS = {
     flow: ["030","040","050","060","070","080","090","100","120","130"]
   },
 
-  "12ESBB60": {
-    label: "12ESBB60",
-    desc:  "",
+  "13ESBB45": {
+    label: "13ESBB45",
+    desc:  "SS Braid + Brass Nut",
     extruder: {
-      od: "13.00–14.00 mm",
+      od: "12.00–13.20 mm",
       odBands: [
-        { label:"Below  <13.00 ✗", r:"FAIL" },
-        { label:"13.00–13.25",     r:"PASS" },
-        { label:"13.26–13.50",     r:"PASS" },
-        { label:"13.51–13.75",     r:"PASS" },
-        { label:"13.76–14.00",     r:"PASS" },
-        { label:"Above  >14.00 ✗", r:"FAIL" }
+        { label:"<12.00 FAIL", r:"FAIL" },
+        { label:"12.00-12.09", r:"PASS" },
+        { label:"12.10-12.19", r:"PASS" },
+        { label:"12.20-12.29", r:"PASS" },
+        { label:"12.30-12.39", r:"PASS" },
+        { label:"12.40-12.49", r:"PASS" },
+        { label:"12.50-12.59", r:"PASS" },
+        { label:"12.60-12.69", r:"PASS" },
+        { label:"12.70-12.79", r:"PASS" },
+        { label:"12.80-12.89", r:"PASS" },
+        { label:"12.90-12.99", r:"PASS" },
+        { label:"13.00-13.09", r:"PASS" },
+        { label:"13.10-13.19", r:"PASS" },
+        { label:">13.20 FAIL", r:"FAIL" }
       ],
-      id: "9.30–10.30 mm",
+      id: "9.00–9.60 mm",
       idBands: [
-        { label:"Below  <9.30 ✗",  r:"FAIL" },
-        { label:"9.30–9.55",       r:"PASS" },
-        { label:"9.56–9.80",       r:"PASS" },
-        { label:"9.81–10.05",      r:"PASS" },
-        { label:"10.06–10.30",     r:"PASS" },
-        { label:"Above  >10.30 ✗", r:"FAIL" }
+        { label:"<9.00 FAIL", r:"FAIL" },
+        { label:"9.00-9.09", r:"PASS" },
+        { label:"9.10-9.19", r:"PASS" },
+        { label:"9.20-9.29", r:"PASS" },
+        { label:"9.30-9.39", r:"PASS" },
+        { label:"9.40-9.49", r:"PASS" },
+        { label:"9.50-9.59", r:"PASS" },
+        { label:">9.60 FAIL", r:"FAIL" }
       ]
     },
     braiding: {
-      od: "13.00–14.00 mm", pitch: "2.00–2.50 mm", machines: 18,
+      od: "12.00–13.51 mm", pitch: "2.00–2.50 mm", machines: 18,
       odBands: [
-        { label:"13.00–13.25", r:"PASS" },
-        { label:"13.26–13.50", r:"PASS" },
-        { label:"13.51–13.75", r:"PASS" },
-        { label:"13.76–14.00", r:"PASS" }
+        { label:"<12.20", r:"PASS" },
+        { label:"12.21-12.30", r:"PASS" },
+        { label:"12.31-12.40", r:"PASS" },
+        { label:"12.41-12.50", r:"PASS" },
+        { label:"12.51-12.60", r:"PASS" },
+        { label:"12.61-12.70", r:"PASS" },
+        { label:"12.71-12.80", r:"PASS" },
+        { label:"12.81-12.90", r:"PASS" },
+        { label:"12.91-12.00", r:"PASS" },
+        { label:"13.01-13.10", r:"PASS" },
+        { label:"13.11-13.20", r:"PASS" },
+        { label:"13.21-13.30", r:"PASS" },
+        { label:"13.31-13.40", r:"PASS" },
+        { label:"13.41-13.50", r:"PASS" },
+        { label:">13.51", r:"PASS" }
       ]
     },
-    crimping: {
-      pressBands: [
-        { label:"Below  <15 ✗", r:"FAIL" },
-        { label:"15–18",        r:"PASS" },
-        { label:"19–22",        r:"PASS" },
-        { label:"23–26",        r:"PASS" },
-        { label:"27–30",        r:"PASS" },
-        { label:"Above  >30 ✗", r:"FAIL" }
-      ],
-      loadBands: [
-        { label:"Below  <40 ✗", r:"FAIL" },
-        { label:"40–45",        r:"PASS" },
-        { label:"46–50",        r:"PASS" },
-        { label:"51–55",        r:"PASS" },
-        { label:"56–60",        r:"PASS" },
-        { label:"Above  >60 ✗", r:"FAIL" }
-      ]
-    },
-    flow: ["030","040","050","060","070","080","090","100","120","130"]
-  },
-
-  "12ENBS45": {
-    label: "12ENBS45",
-    desc:  "",
-    extruder: {
-      od: "11.00–12.20 mm",
-      odBands: [
-        { label:"Below  <11.00 ✗", r:"FAIL" },
-        { label:"11.00–11.09",     r:"PASS" },
-        { label:"11.10–11.19",     r:"PASS" },
-        { label:"11.20–11.29",     r:"PASS" },
-        { label:"11.30–11.39",     r:"PASS" },
-        { label:"11.40–11.49",     r:"PASS" },
-        { label:"11.50–11.59",     r:"PASS" },
-        { label:"11.60–11.69",     r:"PASS" },
-        { label:"11.70–11.79",     r:"PASS" },
-        { label:"11.80–11.89",     r:"PASS" },
-        { label:"11.90–11.99",     r:"PASS" },
-        { label:"12.00–12.09",     r:"PASS" },
-        { label:"12.10–12.19",     r:"PASS" },
-        { label:"Above  >12.20 ✗", r:"FAIL" }
-      ],
-      id: "8.00–8.60 mm",
-      idBands: [
-        { label:"Below  <8.00 ✗",  r:"FAIL" },
-        { label:"8.00–8.09",       r:"PASS" },
-        { label:"8.10–8.19",       r:"PASS" },
-        { label:"8.20–8.29",       r:"PASS" },
-        { label:"8.30–8.39",       r:"PASS" },
-        { label:"8.40–8.49",       r:"PASS" },
-        { label:"8.50–8.59",       r:"PASS" },
-        { label:"Above  >8.60 ✗",  r:"FAIL" }
-      ]
-    },
-    braiding: {
-      od: "13.00–14.00 mm", pitch: "2.00–2.50 mm", machines: 18,
-      odBands: [
-        { label:"13.00–13.25", r:"PASS" },
-        { label:"13.26–13.50", r:"PASS" },
-        { label:"13.51–13.75", r:"PASS" },
-        { label:"13.76–14.00", r:"PASS" }
+    cutting: {
+      len: "415–451 mm",
+      lenBands: [
+        { label:"<415", r:"PASS" },
+        { label:"416-420", r:"PASS" },
+        { label:"421-425", r:"PASS" },
+        { label:"426-430", r:"PASS" },
+        { label:"431-435", r:"PASS" },
+        { label:"436-440", r:"PASS" },
+        { label:"441-445", r:"PASS" },
+        { label:"446-450", r:"PASS" },
+        { label:">451", r:"PASS" }
       ]
     },
     crimping: {
@@ -354,34 +351,237 @@ const PRODUCTS = {
 
   "14ESBB45": {
     label: "14ESBB45",
-    desc:  "",
+    desc:  "SS Braid + Brass Nut",
     extruder: {
       od: "13.00–14.00 mm",
       odBands: [
-        { label:"Below  <13.00 ✗", r:"FAIL" },
-        { label:"13.00–13.25",     r:"PASS" },
-        { label:"13.26–13.50",     r:"PASS" },
-        { label:"13.51–13.75",     r:"PASS" },
-        { label:"13.76–14.00",     r:"PASS" },
-        { label:"Above  >14.00 ✗", r:"FAIL" }
+        { label:"<13.00 FAIL", r:"FAIL" },
+        { label:"13.00-13.09", r:"PASS" },
+        { label:"13.10-13.19", r:"PASS" },
+        { label:"13.20-13.29", r:"PASS" },
+        { label:"13.30-13.39", r:"PASS" },
+        { label:"13.40-13.49", r:"PASS" },
+        { label:"13.50-13.59", r:"PASS" },
+        { label:"13.60-13.69", r:"PASS" },
+        { label:"13.70-13.79", r:"PASS" },
+        { label:"13.80-13.89", r:"PASS" },
+        { label:"13.90-13.99", r:"PASS" },
+        { label:">14.00 Fail", r:"FAIL" }
       ],
-      id: "9.30–10.30 mm",
+      id: "9.00–9.60 mm",
       idBands: [
-        { label:"Below  <9.30 ✗",  r:"FAIL" },
-        { label:"9.30–9.55",       r:"PASS" },
-        { label:"9.56–9.80",       r:"PASS" },
-        { label:"9.81–10.05",      r:"PASS" },
-        { label:"10.06–10.30",     r:"PASS" },
-        { label:"Above  >10.30 ✗", r:"FAIL" }
+        { label:"<9.00 FAIL", r:"FAIL" },
+        { label:"9.00-9.09", r:"PASS" },
+        { label:"9.10-9.19", r:"PASS" },
+        { label:"9.20-9.29", r:"PASS" },
+        { label:"9.30-9.39", r:"PASS" },
+        { label:"9.40-9.49", r:"PASS" },
+        { label:"9.50-9.59", r:"PASS" },
+        { label:">9.60 FAIL", r:"FAIL" }
       ]
     },
     braiding: {
-      od: "13.00–14.00 mm", pitch: "2.00–2.50 mm", machines: 18,
+      od: "13.20–14.00 mm", pitch: "2.00–2.50 mm", machines: 18,
       odBands: [
-        { label:"13.00–13.25", r:"PASS" },
-        { label:"13.26–13.50", r:"PASS" },
-        { label:"13.51–13.75", r:"PASS" },
-        { label:"13.76–14.00", r:"PASS" }
+        { label:"<13.20", r:"PASS" },
+        { label:"13.21-13.30", r:"PASS" },
+        { label:"13.31-13.40", r:"PASS" },
+        { label:"13.41-13.50", r:"PASS" },
+        { label:"13.51-13.60", r:"PASS" },
+        { label:"13.61-13.70", r:"PASS" },
+        { label:"13.71-13.80", r:"PASS" },
+        { label:"13.81-13.90", r:"PASS" },
+        { label:"13.91-14.00", r:"PASS" }
+      ]
+    },
+    cutting: {
+      len: "415–451 mm",
+      lenBands: [
+        { label:"<415", r:"PASS" },
+        { label:"416-420", r:"PASS" },
+        { label:"421-425", r:"PASS" },
+        { label:"426-430", r:"PASS" },
+        { label:"431-435", r:"PASS" },
+        { label:"436-440", r:"PASS" },
+        { label:"441-445", r:"PASS" },
+        { label:"446-450", r:"PASS" },
+        { label:">451", r:"PASS" }
+      ]
+    },
+    crimping: {
+      pressBands: [
+        { label:"Below  <15 ✗", r:"FAIL" },
+        { label:"15–18",        r:"PASS" },
+        { label:"19–22",        r:"PASS" },
+        { label:"23–26",        r:"PASS" },
+        { label:"27–30",        r:"PASS" },
+        { label:"Above  >30 ✗", r:"FAIL" }
+      ],
+      loadBands: [
+        { label:"Below  <40 ✗", r:"FAIL" },
+        { label:"40–45",        r:"PASS" },
+        { label:"46–50",        r:"PASS" },
+        { label:"51–55",        r:"PASS" },
+        { label:"56–60",        r:"PASS" },
+        { label:"Above  >60 ✗", r:"FAIL" }
+      ]
+    },
+    flow: ["030","040","050","060","070","080","090","100","120","130"]
+  },
+
+  "12ESBB60": {
+    label: "12ESBB60",
+    desc:  "SS Braid + Brass Nut",
+    extruder: {
+      od: "11.00–12.20 mm",
+      odBands: [
+        { label:"<11.00 FAIL", r:"FAIL" },
+        { label:"11.00-11.09", r:"PASS" },
+        { label:"11.10-11.19", r:"PASS" },
+        { label:"11.20-11.29", r:"PASS" },
+        { label:"11.30-11.39", r:"PASS" },
+        { label:"11.40-11.49", r:"PASS" },
+        { label:"11.50-11.59", r:"PASS" },
+        { label:"11.60-11.69", r:"PASS" },
+        { label:"11.70-11.79", r:"PASS" },
+        { label:"11.80-11.89", r:"PASS" },
+        { label:"11.90-11.99", r:"PASS" },
+        { label:"12.00-12.09", r:"PASS" },
+        { label:"12.10-12.19", r:"PASS" },
+        { label:">12.20 FAIL", r:"FAIL" }
+      ],
+      id: "8.00–8.60 mm",
+      idBands: [
+        { label:"<8.00 FAIL", r:"FAIL" },
+        { label:"8.00-8.09", r:"PASS" },
+        { label:"8.10-8.19", r:"PASS" },
+        { label:"8.20-8.29", r:"PASS" },
+        { label:"8.30-8.39", r:"PASS" },
+        { label:"8.40-8.49", r:"PASS" },
+        { label:"8.50-8.59", r:"PASS" },
+        { label:">8.60 FAIL", r:"FAIL" }
+      ]
+    },
+    braiding: {
+      od: "11.20–12.51 mm", pitch: "2.00–2.50 mm", machines: 18,
+      odBands: [
+        { label:"<11.20", r:"PASS" },
+        { label:"11.21-11.30", r:"PASS" },
+        { label:"11.31-11.40", r:"PASS" },
+        { label:"11.41-11.50", r:"PASS" },
+        { label:"11.51-11.60", r:"PASS" },
+        { label:"11.61-11.70", r:"PASS" },
+        { label:"11.71-11.80", r:"PASS" },
+        { label:"11.81-11.90", r:"PASS" },
+        { label:"11.91-12.00", r:"PASS" },
+        { label:"12.01-12.10", r:"PASS" },
+        { label:"12.11-12.20", r:"PASS" },
+        { label:"12.21-12.30", r:"PASS" },
+        { label:"12.31-12.40", r:"PASS" },
+        { label:"12.41-12.50", r:"PASS" },
+        { label:">12.51", r:"PASS" }
+      ]
+    },
+    cutting: {
+      len: "570–606 mm",
+      lenBands: [
+        { label:"<570", r:"PASS" },
+        { label:"571-575", r:"PASS" },
+        { label:"576-580", r:"PASS" },
+        { label:"581-585", r:"PASS" },
+        { label:"586-590", r:"PASS" },
+        { label:"591-595", r:"PASS" },
+        { label:"596-600", r:"PASS" },
+        { label:"601-605", r:"PASS" },
+        { label:">606", r:"PASS" }
+      ]
+    },
+    crimping: {
+      pressBands: [
+        { label:"Below  <15 ✗", r:"FAIL" },
+        { label:"15–18",        r:"PASS" },
+        { label:"19–22",        r:"PASS" },
+        { label:"23–26",        r:"PASS" },
+        { label:"27–30",        r:"PASS" },
+        { label:"Above  >30 ✗", r:"FAIL" }
+      ],
+      loadBands: [
+        { label:"Below  <40 ✗", r:"FAIL" },
+        { label:"40–45",        r:"PASS" },
+        { label:"46–50",        r:"PASS" },
+        { label:"51–55",        r:"PASS" },
+        { label:"56–60",        r:"PASS" },
+        { label:"Above  >60 ✗", r:"FAIL" }
+      ]
+    },
+    flow: ["030","040","050","060","070","080","090","100","120","130"]
+  },
+
+  "13ESBB60": {
+    label: "13ESBB60",
+    desc:  "SS Braid + Brass Nut",
+    extruder: {
+      od: "12.00–13.20 mm",
+      odBands: [
+        { label:"<12.00 FAIL", r:"FAIL" },
+        { label:"12.00-12.09", r:"PASS" },
+        { label:"12.10-12.19", r:"PASS" },
+        { label:"12.20-12.29", r:"PASS" },
+        { label:"12.30-12.39", r:"PASS" },
+        { label:"12.40-12.49", r:"PASS" },
+        { label:"12.50-12.59", r:"PASS" },
+        { label:"12.60-12.69", r:"PASS" },
+        { label:"12.70-12.79", r:"PASS" },
+        { label:"12.80-12.89", r:"PASS" },
+        { label:"12.90-12.99", r:"PASS" },
+        { label:"13.00-13.09", r:"PASS" },
+        { label:"13.10-13.19", r:"PASS" },
+        { label:">13.20 FAIL", r:"FAIL" }
+      ],
+      id: "9.00–9.60 mm",
+      idBands: [
+        { label:"<9.00 FAIL", r:"FAIL" },
+        { label:"9.00-9.09", r:"PASS" },
+        { label:"9.10-9.19", r:"PASS" },
+        { label:"9.20-9.29", r:"PASS" },
+        { label:"9.30-9.39", r:"PASS" },
+        { label:"9.40-9.49", r:"PASS" },
+        { label:"9.50-9.59", r:"PASS" },
+        { label:">9.60 FAIL", r:"FAIL" }
+      ]
+    },
+    braiding: {
+      od: "12.00–13.51 mm", pitch: "2.00–2.50 mm", machines: 18,
+      odBands: [
+        { label:"<12.20", r:"PASS" },
+        { label:"12.21-12.30", r:"PASS" },
+        { label:"12.31-12.40", r:"PASS" },
+        { label:"12.41-12.50", r:"PASS" },
+        { label:"12.51-12.60", r:"PASS" },
+        { label:"12.61-12.70", r:"PASS" },
+        { label:"12.71-12.80", r:"PASS" },
+        { label:"12.81-12.90", r:"PASS" },
+        { label:"12.91-12.00", r:"PASS" },
+        { label:"13.01-13.10", r:"PASS" },
+        { label:"13.11-13.20", r:"PASS" },
+        { label:"13.21-13.30", r:"PASS" },
+        { label:"13.31-13.40", r:"PASS" },
+        { label:"13.41-13.50", r:"PASS" },
+        { label:">13.51", r:"PASS" }
+      ]
+    },
+    cutting: {
+      len: "570–606 mm",
+      lenBands: [
+        { label:"<570", r:"PASS" },
+        { label:"571-575", r:"PASS" },
+        { label:"576-580", r:"PASS" },
+        { label:"581-585", r:"PASS" },
+        { label:"586-590", r:"PASS" },
+        { label:"591-595", r:"PASS" },
+        { label:"596-600", r:"PASS" },
+        { label:"601-605", r:"PASS" },
+        { label:">606", r:"PASS" }
       ]
     },
     crimping: {
@@ -407,34 +607,149 @@ const PRODUCTS = {
 
   "14ESBB60": {
     label: "14ESBB60",
-    desc:  "",
+    desc:  "SS Braid + Brass Nut",
     extruder: {
       od: "13.00–14.00 mm",
       odBands: [
-        { label:"Below  <13.00 ✗", r:"FAIL" },
-        { label:"13.00–13.25",     r:"PASS" },
-        { label:"13.26–13.50",     r:"PASS" },
-        { label:"13.51–13.75",     r:"PASS" },
-        { label:"13.76–14.00",     r:"PASS" },
-        { label:"Above  >14.00 ✗", r:"FAIL" }
+        { label:"<13.00 FAIL", r:"FAIL" },
+        { label:"13.00-13.09", r:"PASS" },
+        { label:"13.10-13.19", r:"PASS" },
+        { label:"13.20-13.29", r:"PASS" },
+        { label:"13.30-13.39", r:"PASS" },
+        { label:"13.40-13.49", r:"PASS" },
+        { label:"13.50-13.59", r:"PASS" },
+        { label:"13.60-13.69", r:"PASS" },
+        { label:"13.70-13.79", r:"PASS" },
+        { label:"13.80-13.89", r:"PASS" },
+        { label:"13.90-13.99", r:"PASS" },
+        { label:">14.00 Fail", r:"FAIL" }
       ],
-      id: "9.30–10.30 mm",
+      id: "9.00–9.60 mm",
       idBands: [
-        { label:"Below  <9.30 ✗",  r:"FAIL" },
-        { label:"9.30–9.55",       r:"PASS" },
-        { label:"9.56–9.80",       r:"PASS" },
-        { label:"9.81–10.05",      r:"PASS" },
-        { label:"10.06–10.30",     r:"PASS" },
-        { label:"Above  >10.30 ✗", r:"FAIL" }
+        { label:"<9.00 FAIL", r:"FAIL" },
+        { label:"9.00-9.09", r:"PASS" },
+        { label:"9.10-9.19", r:"PASS" },
+        { label:"9.20-9.29", r:"PASS" },
+        { label:"9.30-9.39", r:"PASS" },
+        { label:"9.40-9.49", r:"PASS" },
+        { label:"9.50-9.59", r:"PASS" },
+        { label:">9.60 FAIL", r:"FAIL" }
       ]
     },
     braiding: {
-      od: "13.00–14.00 mm", pitch: "2.00–2.50 mm", machines: 18,
+      od: "13.20–14.00 mm", pitch: "2.00–2.50 mm", machines: 18,
       odBands: [
-        { label:"13.00–13.25", r:"PASS" },
-        { label:"13.26–13.50", r:"PASS" },
-        { label:"13.51–13.75", r:"PASS" },
-        { label:"13.76–14.00", r:"PASS" }
+        { label:"<13.20", r:"PASS" },
+        { label:"13.21-13.30", r:"PASS" },
+        { label:"13.31-13.40", r:"PASS" },
+        { label:"13.41-13.50", r:"PASS" },
+        { label:"13.51-13.60", r:"PASS" },
+        { label:"13.61-13.70", r:"PASS" },
+        { label:"13.71-13.80", r:"PASS" },
+        { label:"13.81-13.90", r:"PASS" },
+        { label:"13.91-14.00", r:"PASS" }
+      ]
+    },
+    cutting: {
+      len: "570–606 mm",
+      lenBands: [
+        { label:"<570", r:"PASS" },
+        { label:"571-575", r:"PASS" },
+        { label:"576-580", r:"PASS" },
+        { label:"581-585", r:"PASS" },
+        { label:"586-590", r:"PASS" },
+        { label:"591-595", r:"PASS" },
+        { label:"596-600", r:"PASS" },
+        { label:"601-605", r:"PASS" },
+        { label:">606", r:"PASS" }
+      ]
+    },
+    crimping: {
+      pressBands: [
+        { label:"Below  <15 ✗", r:"FAIL" },
+        { label:"15–18",        r:"PASS" },
+        { label:"19–22",        r:"PASS" },
+        { label:"23–26",        r:"PASS" },
+        { label:"27–30",        r:"PASS" },
+        { label:"Above  >30 ✗", r:"FAIL" }
+      ],
+      loadBands: [
+        { label:"Below  <40 ✗", r:"FAIL" },
+        { label:"40–45",        r:"PASS" },
+        { label:"46–50",        r:"PASS" },
+        { label:"51–55",        r:"PASS" },
+        { label:"56–60",        r:"PASS" },
+        { label:"Above  >60 ✗", r:"FAIL" }
+      ]
+    },
+    flow: ["030","040","050","060","070","080","090","100","120","130"]
+  },
+
+  "13ESBN45-16": {
+    label: "13ESBN45-16",
+    desc:  "SS Braid + Nylon Nut 16mm",
+    extruder: {
+      od: "12.00–13.20 mm",
+      odBands: [
+        { label:"<12.00 FAIL", r:"FAIL" },
+        { label:"12.00-12.09", r:"PASS" },
+        { label:"12.10-12.19", r:"PASS" },
+        { label:"12.20-12.29", r:"PASS" },
+        { label:"12.30-12.39", r:"PASS" },
+        { label:"12.40-12.49", r:"PASS" },
+        { label:"12.50-12.59", r:"PASS" },
+        { label:"12.60-12.69", r:"PASS" },
+        { label:"12.70-12.79", r:"PASS" },
+        { label:"12.80-12.89", r:"PASS" },
+        { label:"12.90-12.99", r:"PASS" },
+        { label:"13.00-13.09", r:"PASS" },
+        { label:"13.10-13.19", r:"PASS" },
+        { label:">13.20 FAIL", r:"FAIL" }
+      ],
+      id: "9.00–9.60 mm",
+      idBands: [
+        { label:"<9.00 FAIL", r:"FAIL" },
+        { label:"9.00-9.09", r:"PASS" },
+        { label:"9.10-9.19", r:"PASS" },
+        { label:"9.20-9.29", r:"PASS" },
+        { label:"9.30-9.39", r:"PASS" },
+        { label:"9.40-9.49", r:"PASS" },
+        { label:"9.50-9.59", r:"PASS" },
+        { label:">9.60 FAIL", r:"FAIL" }
+      ]
+    },
+    braiding: {
+      od: "12.00–13.51 mm", pitch: "2.00–2.50 mm", machines: 18,
+      odBands: [
+        { label:"<12.20", r:"PASS" },
+        { label:"12.21-12.30", r:"PASS" },
+        { label:"12.31-12.40", r:"PASS" },
+        { label:"12.41-12.50", r:"PASS" },
+        { label:"12.51-12.60", r:"PASS" },
+        { label:"12.61-12.70", r:"PASS" },
+        { label:"12.71-12.80", r:"PASS" },
+        { label:"12.81-12.90", r:"PASS" },
+        { label:"12.91-12.00", r:"PASS" },
+        { label:"13.01-13.10", r:"PASS" },
+        { label:"13.11-13.20", r:"PASS" },
+        { label:"13.21-13.30", r:"PASS" },
+        { label:"13.31-13.40", r:"PASS" },
+        { label:"13.41-13.50", r:"PASS" },
+        { label:">13.51", r:"PASS" }
+      ]
+    },
+    cutting: {
+      len: "415–451 mm",
+      lenBands: [
+        { label:"<415", r:"PASS" },
+        { label:"416-420", r:"PASS" },
+        { label:"421-425", r:"PASS" },
+        { label:"426-430", r:"PASS" },
+        { label:"431-435", r:"PASS" },
+        { label:"436-440", r:"PASS" },
+        { label:"441-445", r:"PASS" },
+        { label:"446-450", r:"PASS" },
+        { label:">451", r:"PASS" }
       ]
     },
     crimping: {
@@ -460,34 +775,61 @@ const PRODUCTS = {
 
   "14ESBN45-16": {
     label: "14ESBN45-16",
-    desc:  "",
+    desc:  "SS Braid + Nylon Nut 16mm",
     extruder: {
       od: "13.00–14.00 mm",
       odBands: [
-        { label:"Below  <13.00 ✗", r:"FAIL" },
-        { label:"13.00–13.25",     r:"PASS" },
-        { label:"13.26–13.50",     r:"PASS" },
-        { label:"13.51–13.75",     r:"PASS" },
-        { label:"13.76–14.00",     r:"PASS" },
-        { label:"Above  >14.00 ✗", r:"FAIL" }
+        { label:"<13.00 FAIL", r:"FAIL" },
+        { label:"13.00-13.09", r:"PASS" },
+        { label:"13.10-13.19", r:"PASS" },
+        { label:"13.20-13.29", r:"PASS" },
+        { label:"13.30-13.39", r:"PASS" },
+        { label:"13.40-13.49", r:"PASS" },
+        { label:"13.50-13.59", r:"PASS" },
+        { label:"13.60-13.69", r:"PASS" },
+        { label:"13.70-13.79", r:"PASS" },
+        { label:"13.80-13.89", r:"PASS" },
+        { label:"13.90-13.99", r:"PASS" },
+        { label:">14.00 Fail", r:"FAIL" }
       ],
-      id: "9.30–10.30 mm",
+      id: "9.00–9.60 mm",
       idBands: [
-        { label:"Below  <9.30 ✗",  r:"FAIL" },
-        { label:"9.30–9.55",       r:"PASS" },
-        { label:"9.56–9.80",       r:"PASS" },
-        { label:"9.81–10.05",      r:"PASS" },
-        { label:"10.06–10.30",     r:"PASS" },
-        { label:"Above  >10.30 ✗", r:"FAIL" }
+        { label:"<9.00 FAIL", r:"FAIL" },
+        { label:"9.00-9.09", r:"PASS" },
+        { label:"9.10-9.19", r:"PASS" },
+        { label:"9.20-9.29", r:"PASS" },
+        { label:"9.30-9.39", r:"PASS" },
+        { label:"9.40-9.49", r:"PASS" },
+        { label:"9.50-9.59", r:"PASS" },
+        { label:">9.60 FAIL", r:"FAIL" }
       ]
     },
     braiding: {
-      od: "13.00–14.00 mm", pitch: "2.00–2.50 mm", machines: 18,
+      od: "13.20–14.00 mm", pitch: "2.00–2.50 mm", machines: 18,
       odBands: [
-        { label:"13.00–13.25", r:"PASS" },
-        { label:"13.26–13.50", r:"PASS" },
-        { label:"13.51–13.75", r:"PASS" },
-        { label:"13.76–14.00", r:"PASS" }
+        { label:"<13.20", r:"PASS" },
+        { label:"13.21-13.30", r:"PASS" },
+        { label:"13.31-13.40", r:"PASS" },
+        { label:"13.41-13.50", r:"PASS" },
+        { label:"13.51-13.60", r:"PASS" },
+        { label:"13.61-13.70", r:"PASS" },
+        { label:"13.71-13.80", r:"PASS" },
+        { label:"13.81-13.90", r:"PASS" },
+        { label:"13.91-14.00", r:"PASS" }
+      ]
+    },
+    cutting: {
+      len: "415–451 mm",
+      lenBands: [
+        { label:"<415", r:"PASS" },
+        { label:"416-420", r:"PASS" },
+        { label:"421-425", r:"PASS" },
+        { label:"426-430", r:"PASS" },
+        { label:"431-435", r:"PASS" },
+        { label:"436-440", r:"PASS" },
+        { label:"441-445", r:"PASS" },
+        { label:"446-450", r:"PASS" },
+        { label:">451", r:"PASS" }
       ]
     },
     crimping: {
@@ -511,36 +853,71 @@ const PRODUCTS = {
     flow: ["030","040","050","060","070","080","090","100","120","130"]
   },
 
-  "14ESBN45-19": {
-    label: "14ESBN45-19",
-    desc:  "",
+  "12ENBN40-16": {
+    label: "12ENBN40-16",
+    desc:  "Nylon Braid + Nylon Nut — Crompton 400mm",
     extruder: {
-      od: "13.00–14.00 mm",
+      od: "11.00–12.20 mm",
       odBands: [
-        { label:"Below  <13.00 ✗", r:"FAIL" },
-        { label:"13.00–13.25",     r:"PASS" },
-        { label:"13.26–13.50",     r:"PASS" },
-        { label:"13.51–13.75",     r:"PASS" },
-        { label:"13.76–14.00",     r:"PASS" },
-        { label:"Above  >14.00 ✗", r:"FAIL" }
+        { label:"<11.00 FAIL", r:"FAIL" },
+        { label:"11.00-11.09", r:"PASS" },
+        { label:"11.10-11.19", r:"PASS" },
+        { label:"11.20-11.29", r:"PASS" },
+        { label:"11.30-11.39", r:"PASS" },
+        { label:"11.40-11.49", r:"PASS" },
+        { label:"11.50-11.59", r:"PASS" },
+        { label:"11.60-11.69", r:"PASS" },
+        { label:"11.70-11.79", r:"PASS" },
+        { label:"11.80-11.89", r:"PASS" },
+        { label:"11.90-11.99", r:"PASS" },
+        { label:"12.00-12.09", r:"PASS" },
+        { label:"12.10-12.19", r:"PASS" },
+        { label:">12.20 FAIL", r:"FAIL" }
       ],
-      id: "9.30–10.30 mm",
+      id: "8.00–8.60 mm",
       idBands: [
-        { label:"Below  <9.30 ✗",  r:"FAIL" },
-        { label:"9.30–9.55",       r:"PASS" },
-        { label:"9.56–9.80",       r:"PASS" },
-        { label:"9.81–10.05",      r:"PASS" },
-        { label:"10.06–10.30",     r:"PASS" },
-        { label:"Above  >10.30 ✗", r:"FAIL" }
+        { label:"<8.00 FAIL", r:"FAIL" },
+        { label:"8.00-8.09", r:"PASS" },
+        { label:"8.10-8.19", r:"PASS" },
+        { label:"8.20-8.29", r:"PASS" },
+        { label:"8.30-8.39", r:"PASS" },
+        { label:"8.40-8.49", r:"PASS" },
+        { label:"8.50-8.59", r:"PASS" },
+        { label:">8.60 FAIL", r:"FAIL" }
       ]
     },
     braiding: {
-      od: "13.00–14.00 mm", pitch: "2.00–2.50 mm", machines: 18,
+      od: "11.20–12.51 mm", pitch: "2.00–2.50 mm", machines: 18,
       odBands: [
-        { label:"13.00–13.25", r:"PASS" },
-        { label:"13.26–13.50", r:"PASS" },
-        { label:"13.51–13.75", r:"PASS" },
-        { label:"13.76–14.00", r:"PASS" }
+        { label:"<11.20", r:"PASS" },
+        { label:"11.21-11.30", r:"PASS" },
+        { label:"11.31-11.40", r:"PASS" },
+        { label:"11.41-11.50", r:"PASS" },
+        { label:"11.51-11.60", r:"PASS" },
+        { label:"11.61-11.70", r:"PASS" },
+        { label:"11.71-11.80", r:"PASS" },
+        { label:"11.81-11.90", r:"PASS" },
+        { label:"11.91-12.00", r:"PASS" },
+        { label:"12.01-12.10", r:"PASS" },
+        { label:"12.11-12.20", r:"PASS" },
+        { label:"12.21-12.30", r:"PASS" },
+        { label:"12.31-12.40", r:"PASS" },
+        { label:"12.41-12.50", r:"PASS" },
+        { label:">12.51", r:"PASS" }
+      ]
+    },
+    cutting: {
+      len: "370–405 mm",
+      lenBands: [
+        { label:"<370", r:"PASS" },
+        { label:"371-375", r:"PASS" },
+        { label:"376-380", r:"PASS" },
+        { label:"381-385", r:"PASS" },
+        { label:"386-390", r:"PASS" },
+        { label:"391-395", r:"PASS" },
+        { label:"396-400", r:"PASS" },
+        { label:"401-405", r:"PASS" },
+        { label:">405 FAIL", r:"FAIL" }
       ]
     },
     crimping: {
@@ -564,36 +941,247 @@ const PRODUCTS = {
     flow: ["030","040","050","060","070","080","090","100","120","130"]
   },
 
-  "14ENBN45": {
-    label: "14ENBN45",
-    desc:  "",
+  "13ENBN40-16": {
+    label: "13ENBN40-16",
+    desc:  "Nylon Braid + Nylon Nut — Crompton 400mm",
     extruder: {
-      od: "13.00–14.00 mm",
+      od: "12.00–13.20 mm",
       odBands: [
-        { label:"Below  <13.00 ✗", r:"FAIL" },
-        { label:"13.00–13.25",     r:"PASS" },
-        { label:"13.26–13.50",     r:"PASS" },
-        { label:"13.51–13.75",     r:"PASS" },
-        { label:"13.76–14.00",     r:"PASS" },
-        { label:"Above  >14.00 ✗", r:"FAIL" }
+        { label:"<12.00 FAIL", r:"FAIL" },
+        { label:"12.00-12.09", r:"PASS" },
+        { label:"12.10-12.19", r:"PASS" },
+        { label:"12.20-12.29", r:"PASS" },
+        { label:"12.30-12.39", r:"PASS" },
+        { label:"12.40-12.49", r:"PASS" },
+        { label:"12.50-12.59", r:"PASS" },
+        { label:"12.60-12.69", r:"PASS" },
+        { label:"12.70-12.79", r:"PASS" },
+        { label:"12.80-12.89", r:"PASS" },
+        { label:"12.90-12.99", r:"PASS" },
+        { label:"13.00-13.09", r:"PASS" },
+        { label:"13.10-13.19", r:"PASS" },
+        { label:">13.20 FAIL", r:"FAIL" }
       ],
-      id: "9.30–10.30 mm",
+      id: "9.00–9.60 mm",
       idBands: [
-        { label:"Below  <9.30 ✗",  r:"FAIL" },
-        { label:"9.30–9.55",       r:"PASS" },
-        { label:"9.56–9.80",       r:"PASS" },
-        { label:"9.81–10.05",      r:"PASS" },
-        { label:"10.06–10.30",     r:"PASS" },
-        { label:"Above  >10.30 ✗", r:"FAIL" }
+        { label:"<9.00 FAIL", r:"FAIL" },
+        { label:"9.00-9.09", r:"PASS" },
+        { label:"9.10-9.19", r:"PASS" },
+        { label:"9.20-9.29", r:"PASS" },
+        { label:"9.30-9.39", r:"PASS" },
+        { label:"9.40-9.49", r:"PASS" },
+        { label:"9.50-9.59", r:"PASS" },
+        { label:">9.60 FAIL", r:"FAIL" }
       ]
     },
     braiding: {
-      od: "13.00–14.00 mm", pitch: "2.00–2.50 mm", machines: 18,
+      od: "12.00–13.51 mm", pitch: "2.00–2.50 mm", machines: 18,
       odBands: [
-        { label:"13.00–13.25", r:"PASS" },
-        { label:"13.26–13.50", r:"PASS" },
-        { label:"13.51–13.75", r:"PASS" },
-        { label:"13.76–14.00", r:"PASS" }
+        { label:"<12.20", r:"PASS" },
+        { label:"12.21-12.30", r:"PASS" },
+        { label:"12.31-12.40", r:"PASS" },
+        { label:"12.41-12.50", r:"PASS" },
+        { label:"12.51-12.60", r:"PASS" },
+        { label:"12.61-12.70", r:"PASS" },
+        { label:"12.71-12.80", r:"PASS" },
+        { label:"12.81-12.90", r:"PASS" },
+        { label:"12.91-12.00", r:"PASS" },
+        { label:"13.01-13.10", r:"PASS" },
+        { label:"13.11-13.20", r:"PASS" },
+        { label:"13.21-13.30", r:"PASS" },
+        { label:"13.31-13.40", r:"PASS" },
+        { label:"13.41-13.50", r:"PASS" },
+        { label:">13.51", r:"PASS" }
+      ]
+    },
+    cutting: {
+      len: "370–405 mm",
+      lenBands: [
+        { label:"<370", r:"PASS" },
+        { label:"371-375", r:"PASS" },
+        { label:"376-380", r:"PASS" },
+        { label:"381-385", r:"PASS" },
+        { label:"386-390", r:"PASS" },
+        { label:"391-395", r:"PASS" },
+        { label:"396-400", r:"PASS" },
+        { label:"401-405", r:"PASS" },
+        { label:">405 FAIL", r:"FAIL" }
+      ]
+    },
+    crimping: {
+      pressBands: [
+        { label:"Below  <15 ✗", r:"FAIL" },
+        { label:"15–18",        r:"PASS" },
+        { label:"19–22",        r:"PASS" },
+        { label:"23–26",        r:"PASS" },
+        { label:"27–30",        r:"PASS" },
+        { label:"Above  >30 ✗", r:"FAIL" }
+      ],
+      loadBands: [
+        { label:"Below  <40 ✗", r:"FAIL" },
+        { label:"40–45",        r:"PASS" },
+        { label:"46–50",        r:"PASS" },
+        { label:"51–55",        r:"PASS" },
+        { label:"56–60",        r:"PASS" },
+        { label:"Above  >60 ✗", r:"FAIL" }
+      ]
+    },
+    flow: ["030","040","050","060","070","080","090","100","120","130"]
+  },
+
+  "13ENBN45": {
+    label: "13ENBN45",
+    desc:  "Nylon Braid + Nylon Nut 16mm — V-Guard",
+    extruder: {
+      od: "12.00–13.20 mm",
+      odBands: [
+        { label:"<12.00 FAIL", r:"FAIL" },
+        { label:"12.00-12.09", r:"PASS" },
+        { label:"12.10-12.19", r:"PASS" },
+        { label:"12.20-12.29", r:"PASS" },
+        { label:"12.30-12.39", r:"PASS" },
+        { label:"12.40-12.49", r:"PASS" },
+        { label:"12.50-12.59", r:"PASS" },
+        { label:"12.60-12.69", r:"PASS" },
+        { label:"12.70-12.79", r:"PASS" },
+        { label:"12.80-12.89", r:"PASS" },
+        { label:"12.90-12.99", r:"PASS" },
+        { label:"13.00-13.09", r:"PASS" },
+        { label:"13.10-13.19", r:"PASS" },
+        { label:">13.20 FAIL", r:"FAIL" }
+      ],
+      id: "9.00–9.60 mm",
+      idBands: [
+        { label:"<9.00 FAIL", r:"FAIL" },
+        { label:"9.00-9.09", r:"PASS" },
+        { label:"9.10-9.19", r:"PASS" },
+        { label:"9.20-9.29", r:"PASS" },
+        { label:"9.30-9.39", r:"PASS" },
+        { label:"9.40-9.49", r:"PASS" },
+        { label:"9.50-9.59", r:"PASS" },
+        { label:">9.60 FAIL", r:"FAIL" }
+      ]
+    },
+    braiding: {
+      od: "12.00–13.51 mm", pitch: "2.00–2.50 mm", machines: 18,
+      odBands: [
+        { label:"<12.20", r:"PASS" },
+        { label:"12.21-12.30", r:"PASS" },
+        { label:"12.31-12.40", r:"PASS" },
+        { label:"12.41-12.50", r:"PASS" },
+        { label:"12.51-12.60", r:"PASS" },
+        { label:"12.61-12.70", r:"PASS" },
+        { label:"12.71-12.80", r:"PASS" },
+        { label:"12.81-12.90", r:"PASS" },
+        { label:"12.91-12.00", r:"PASS" },
+        { label:"13.01-13.10", r:"PASS" },
+        { label:"13.11-13.20", r:"PASS" },
+        { label:"13.21-13.30", r:"PASS" },
+        { label:"13.31-13.40", r:"PASS" },
+        { label:"13.41-13.50", r:"PASS" },
+        { label:">13.51", r:"PASS" }
+      ]
+    },
+    cutting: {
+      len: "415–451 mm",
+      lenBands: [
+        { label:"<415", r:"PASS" },
+        { label:"416-420", r:"PASS" },
+        { label:"421-425", r:"PASS" },
+        { label:"426-430", r:"PASS" },
+        { label:"431-435", r:"PASS" },
+        { label:"436-440", r:"PASS" },
+        { label:"441-445", r:"PASS" },
+        { label:"446-450", r:"PASS" },
+        { label:">451", r:"PASS" }
+      ]
+    },
+    crimping: {
+      pressBands: [
+        { label:"Below  <15 ✗", r:"FAIL" },
+        { label:"15–18",        r:"PASS" },
+        { label:"19–22",        r:"PASS" },
+        { label:"23–26",        r:"PASS" },
+        { label:"27–30",        r:"PASS" },
+        { label:"Above  >30 ✗", r:"FAIL" }
+      ],
+      loadBands: [
+        { label:"Below  <40 ✗", r:"FAIL" },
+        { label:"40–45",        r:"PASS" },
+        { label:"46–50",        r:"PASS" },
+        { label:"51–55",        r:"PASS" },
+        { label:"56–60",        r:"PASS" },
+        { label:"Above  >60 ✗", r:"FAIL" }
+      ]
+    },
+    flow: ["030","040","050","060","070","080","090","100","120","130"]
+  },
+
+  "13ESBN45-19": {
+    label: "13ESBN45-19",
+    desc:  "SS Braid + Nylon Nut 19mm — V-Guard Kalaamb",
+    extruder: {
+      od: "12.00–13.20 mm",
+      odBands: [
+        { label:"<12.00 FAIL", r:"FAIL" },
+        { label:"12.00-12.09", r:"PASS" },
+        { label:"12.10-12.19", r:"PASS" },
+        { label:"12.20-12.29", r:"PASS" },
+        { label:"12.30-12.39", r:"PASS" },
+        { label:"12.40-12.49", r:"PASS" },
+        { label:"12.50-12.59", r:"PASS" },
+        { label:"12.60-12.69", r:"PASS" },
+        { label:"12.70-12.79", r:"PASS" },
+        { label:"12.80-12.89", r:"PASS" },
+        { label:"12.90-12.99", r:"PASS" },
+        { label:"13.00-13.09", r:"PASS" },
+        { label:"13.10-13.19", r:"PASS" },
+        { label:">13.20 FAIL", r:"FAIL" }
+      ],
+      id: "9.00–9.60 mm",
+      idBands: [
+        { label:"<9.00 FAIL", r:"FAIL" },
+        { label:"9.00-9.09", r:"PASS" },
+        { label:"9.10-9.19", r:"PASS" },
+        { label:"9.20-9.29", r:"PASS" },
+        { label:"9.30-9.39", r:"PASS" },
+        { label:"9.40-9.49", r:"PASS" },
+        { label:"9.50-9.59", r:"PASS" },
+        { label:">9.60 FAIL", r:"FAIL" }
+      ]
+    },
+    braiding: {
+      od: "12.00–13.51 mm", pitch: "2.00–2.50 mm", machines: 18,
+      odBands: [
+        { label:"<12.20", r:"PASS" },
+        { label:"12.21-12.30", r:"PASS" },
+        { label:"12.31-12.40", r:"PASS" },
+        { label:"12.41-12.50", r:"PASS" },
+        { label:"12.51-12.60", r:"PASS" },
+        { label:"12.61-12.70", r:"PASS" },
+        { label:"12.71-12.80", r:"PASS" },
+        { label:"12.81-12.90", r:"PASS" },
+        { label:"12.91-12.00", r:"PASS" },
+        { label:"13.01-13.10", r:"PASS" },
+        { label:"13.11-13.20", r:"PASS" },
+        { label:"13.21-13.30", r:"PASS" },
+        { label:"13.31-13.40", r:"PASS" },
+        { label:"13.41-13.50", r:"PASS" },
+        { label:">13.51", r:"PASS" }
+      ]
+    },
+    cutting: {
+      len: "415–451 mm",
+      lenBands: [
+        { label:"<415", r:"PASS" },
+        { label:"416-420", r:"PASS" },
+        { label:"421-425", r:"PASS" },
+        { label:"426-430", r:"PASS" },
+        { label:"431-435", r:"PASS" },
+        { label:"436-440", r:"PASS" },
+        { label:"441-445", r:"PASS" },
+        { label:"446-450", r:"PASS" },
+        { label:">451", r:"PASS" }
       ]
     },
     crimping: {
@@ -618,7 +1206,7 @@ const PRODUCTS = {
   }
 };
 
-const OPERATORS   = ["Amit","Ankita","Dinesh","Kelash","Ramesh","Ramu","Suresh","Other"];
+const OPERATORS   = ["Alam","Amar","Amit","Anish","Anita","Ankit","Chintu","Devender","Dinesh","Durga Prasad","Geeta","Gurdeep","Jinku","Kailsah","Mangal","Rajesh","Rakesh","Sahil","Sailesh","Sulekha","Pooja","Rajender","Choote Chowdhary","Kiran Bharai","Other"];
 const SUPERVISORS = ["Saksham","QA Manager","Shift Supervisor","Other"];
 
 // ═══════════════════════════════════════════════
@@ -701,12 +1289,12 @@ function buildProcesses(pk) {
     "090": {
       no:"090", machine:"Cutting Machine", name:"Part Off (Cutting)",
       checks:[
-        { key:"Length",     spec:"As per order", method:"Measuring Tape",
-          type:"pf", passLabel:"Correct  ✓", failLabel:"Wrong Length  ✗" },
+        { key:"Length",     spec:p.cutting.len, method:"Measuring Tape",
+          type:"bands", bands:p.cutting.lenBands },
         { key:"Wire Cut",   spec:"No wire cut",  method:"Visual",
-          type:"pf", passLabel:"None  ✓", failLabel:"Wire Cut  ✗" },
+          type:"pf", passLabel:"None (OK)  ✓", failLabel:"Wire Cut (FAIL)  ✗" },
         { key:"Appearance", spec:"No defects",   method:"Visual",
-          type:"pf", passLabel:"OK  ✓", failLabel:"Defect  ✗" }
+          type:"pf", passLabel:"OK  ✓", failLabel:"Defect Found (FAIL)  ✗" }
       ]
     },
     "091": {
@@ -762,7 +1350,7 @@ function buildProcesses(pk) {
 // S.roundData[r].entries  – pkey → { result, label, time }
 // S.roundData[r].braiding – "BR-01" → { result, label }
 // ═══════════════════════════════════════════════
-const ROUND_LABELS = ["FOA / Setup", "Reading 1", "Reading 2", "Reading 3"];
+const ROUND_LABELS = ["Approval Sample", "09:00", "12:00", "14:00", "17:00", "19:00", "Last of Shift"];
 function emptyRound() { return { entries:{}, braiding:{} }; }
 
 let S = {
@@ -770,7 +1358,7 @@ let S = {
   processIdx:0,
   currentRound:0,
   procOperators:{},
-  roundData:[ emptyRound(), emptyRound(), emptyRound(), emptyRound() ],
+  roundData:ROUND_LABELS.map(() => emptyRound()),
   activeBraid:null,
   supName:"", verified:{}, finalisedAt:""
 };
@@ -864,7 +1452,7 @@ function startInspection() {
   if (!S.product)  { alert("Please select a product."); return; }
   if (!S.operator) { alert("Please select an operator."); return; }
   S.processIdx = 0; S.currentRound = 0; S.procOperators = {};
-  S.roundData = [ emptyRound(), emptyRound(), emptyRound(), emptyRound() ];
+  S.roundData = ROUND_LABELS.map(() => emptyRound());
   S.activeBraid = null; S.verified = {};
   S.screen = "process"; render();
 }
@@ -1344,7 +1932,7 @@ function rReport() {
 function newInspection() {
   S = { screen:"setup", product:"", date:today(), shift:"Morning", operator:"",
         processIdx:0, currentRound:0, procOperators:{},
-        roundData:[ emptyRound(), emptyRound(), emptyRound(), emptyRound() ],
+        roundData:ROUND_LABELS.map(() => emptyRound()),
         activeBraid:null, supName:"", verified:{}, finalisedAt:"" };
   render();
 }
