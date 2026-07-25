@@ -1331,7 +1331,7 @@ function buildProcesses(pk) {
       no:"120", machine:"Crimping", name:"Cap Punching",
       checks:[
         { key:"Crimp O.D.", spec:"Per standard", method:"Vernier Caliper",
-          type:"pf", passLabel:"Within Std.  ✓", failLabel:"Out of Std.  ✗", photo:true },
+          type:"pf_manual", passLabel:"Within Std.  ✓", failLabel:"Out of Std.  ✗", unit:"mm", photo:true },
         { key:"Pressure Testing",  spec:"15–30 Kgf", method:"Hydropneumatic M/c",
           type:"bands", bands: p.crimping ? p.crimping.pressBands : [], photo:true },
         { key:"Fitting Load Test", spec:"40–60 Kgf", method:"Tensile Machine",
@@ -1540,6 +1540,7 @@ function isCheckDone(chk, key) {
   if (!e) return false;
   if (chk.type === "pf_sub") return !!e.label;
   if (chk.type === "manual") return !!e.label;
+  if (chk.type === "pf_manual") return e.result==="FAIL" || !!e.label;
   return true;
 }
 
@@ -1715,6 +1716,26 @@ function rChecks(proc) {
           ${c.passRanges.map(r =>
             `<button class="sub-btn ${e.label===r?"on":""}"
                onclick="recordSub('${key}','${esc(r)}')">${r}</button>`).join("")}
+        </div>`;
+      }
+
+    } else if (c.type === "pf_manual") {
+      const passCls = e?.result==="PASS" ? (e.label ? "s-pass" : "s-pass-pending") : "";
+      body = `
+        <div class="pf-row">
+          <button class="pf-btn ${passCls}" onclick="selectPass('${key}')">✓ ${c.passLabel}</button>
+          <button class="pf-btn ${e?.result==="FAIL"?"s-fail":""}"
+            onclick="recordPF('${key}','FAIL','${esc(c.failLabel)}')">✗ ${c.failLabel}</button>
+        </div>`;
+      if (e?.result === "PASS") {
+        const val = e?.label || "";
+        body += `
+        <div class="manual-row">
+          <input id="manual_${key}" class="manual-input" type="number" step="0.01"
+            placeholder="Enter measured value" value="${val}"
+            onkeydown="if(event.key==='Enter')recordManual('${key}')"/>
+          <span class="manual-unit">${c.unit||""}</span>
+          <button class="manual-confirm" onclick="recordManual('${key}')">✓ Save</button>
         </div>`;
       }
 
@@ -2028,7 +2049,7 @@ const SHEET_HEADERS = [
   "Length","Wire Cut","Appearance (P090)",
   "O.D. Photo","I.D. Photo","Pressure Photo (P050)","Length Photo (P090)",
   "Crimp O.D. Photo (P120)","Pressure Testing Photo (P120)","Fitting Load Test Photo (P120)","Air Leakage Photo (P120)",
-  "Braiding Photos","Supervisor","Finalised At"
+  "Braiding Photos","Supervisor","Finalised At","Crimp O.D. Measured (P120)"
 ];
 
 function buildSheetRows() {
@@ -2069,7 +2090,8 @@ function buildSheetRows() {
       g("120","Air Leakage").photo || "",
       braidPhotos,
       S.supName,
-      S.finalisedAt
+      S.finalisedAt,
+      g("120","Crimp O.D.").label || ""
     ];
   }).filter(Boolean);
 }
