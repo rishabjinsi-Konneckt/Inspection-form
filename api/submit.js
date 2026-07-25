@@ -32,7 +32,7 @@ module.exports = async function handler(req, res) {
     if (mode === 'update') {
       url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(
         range
-      )}?valueInputOption=USER_ENTERED`;
+      )}?valueInputOption=RAW`;
       fetchOpts = {
         method: 'PUT',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -41,7 +41,7 @@ module.exports = async function handler(req, res) {
     } else {
       url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(
         range
-      )}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+      )}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`;
       fetchOpts = {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
