@@ -29,6 +29,7 @@ select:focus, input[type="date"]:focus { border-color: #2563eb; }
 .shift-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 5px; }
 .shift-btn { flex: 1 1 30%; min-width: 90px; padding: 11px 4px; border: 2px solid #e2e8f0; border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer; background: white; color: #64748b; text-align: center; }
 .shift-btn.on { background: #eff6ff; border-color: #2563eb; color: #2563eb; }
+.shift-btn.locked { opacity: .45; cursor: not-allowed; background: #f8fafc; }
 
 .proc-badge   { background: #1e3a5f; color: white; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; display: inline-block; margin-bottom: 8px; }
 .proc-title   { font-size: 17px; font-weight: 700; }
@@ -1528,7 +1529,7 @@ let S = {
   submitStatus:"", submitError:"",
   batchBase:"", batchNo:"", batchDay:1, reportedThroughIdx:0, dayRowNum:null,
   logFilters:{date:"",product:"",search:""}, logResults:null, logLoading:false, logError:"",
-  vrPin:"", vrName:"", vrRows:null, vrLoading:false, vrError:""
+  vrPin:"", vrName:"", vrRows:null, vrLoading:false, vrError:"", vrDetailRow:null, vrJustVerified:false
 };
 
 // helpers so rest of code stays concise
@@ -1635,8 +1636,8 @@ function allEntryKeys() {
 // RENDER ROUTER
 // ═══════════════════════════════════════════════
 function render() {
-  const fns = { setup:rSetup, process:rProcess, review:rReview, verify:rVerify, report:rReport, log:rLog, paused:rPaused,
-    vrpin:rVrPin, vrname:rVrName, vrlist:rVrList };
+  const fns = { setup:rSetup, process:rProcess, review:rReview, submitted:rSubmitted, report:rReport, log:rLog, paused:rPaused,
+    vrpin:rVrPin, vrname:rVrName, vrlist:rVrList, vrdetail:rVrDetail };
   document.getElementById("app").innerHTML = fns[S.screen]();
   saveState();
 }
@@ -1644,6 +1645,22 @@ function render() {
 // ═══════════════════════════════════════════════
 // SCREEN 1 — SETUP
 // ═══════════════════════════════════════════════
+// Approval Sample (ROUND_LABELS[0]) must be completed before any other shift can be
+// started/continued, for every product, within a given batch. If the currently selected
+// product+date's batch hasn't finished its Approval Sample round yet, this both reports
+// that fact AND snaps S.shift back to Approval Sample if it had drifted onto a locked one.
+function enforceShiftGate() {
+  const base = (S.product && S.date) ? genBatchBase(S.date, PRODUCTS[S.product].label) : null;
+  const reg  = base ? loadBatchRegistry()[base] : null;
+  const approvalDone = !!(reg && reg.rounds && reg.rounds[0] && reg.rounds[0].complete);
+  const locked = !!base && !approvalDone;
+  if (locked && ROUND_LABELS.indexOf(S.shift) !== 0) {
+    S.shift = ROUND_LABELS[0];
+    S.currentRound = 0;
+  }
+  return locked;
+}
+
 function rSetup() {
   const pOpts = Object.keys(PRODUCTS).map(k =>
     `<option value="${k}" ${S.product===k?"selected":""}>${PRODUCTS[k].label} — ${PRODUCTS[k].desc}</option>`).join("");
@@ -1651,15 +1668,18 @@ function rSetup() {
     `<option value="${o}" ${S.operator===o?"selected":""}>${o}</option>`).join("");
 
   const batchPreview = (S.product && S.date) ? genBatchBase(S.date, PRODUCTS[S.product].label) : "";
+  const shiftLocked = enforceShiftGate();
 
   const registry  = loadBatchRegistry();
   const batchKeys = Object.keys(registry);
   const contOpts  = batchKeys.map(b => {
     const rounds = registry[b].rounds || {};
-    const thisRoundIdx = ROUND_LABELS.indexOf(S.shift);
-    const thisRound = rounds[thisRoundIdx];
-    const tag = thisRound && thisRound.complete ? " · this shift already finalised" : "";
-    return `<option value="${b}">${b} — ${registry[b].product} (day ${registry[b].lastDay} last done ${registry[b].lastDate})${tag}</option>`;
+    const roundSummary = ROUND_LABELS.map((lbl, i) => {
+      const r = rounds[i];
+      if (!r) return null;
+      return `${lbl}: ${r.complete ? "done" : "in progress"}`;
+    }).filter(Boolean).join(", ");
+    return `<option value="${b}">${b} — ${registry[b].product} (day ${registry[b].lastDay} last done ${registry[b].lastDate})${roundSummary ? " · " + roundSummary : ""}</option>`;
   }).join("");
 
   return `
@@ -1677,9 +1697,16 @@ function rSetup() {
       ${batchPreview ? `<div style="font-size:12px;color:#64748b;margin-top:6px;">Batch No. (auto): <strong>${batchPreview}</strong></div>` : ""}
       <label>Shift</label>
       <div class="shift-row">
-        ${ROUND_LABELS.map((sh,shi) =>
-          `<div class="shift-btn ${S.shift===sh?"on":""}" onclick="S.shift='${sh}';S.currentRound=${shi};render()">${sh}</div>`).join("")}
+        ${ROUND_LABELS.map((sh,shi) => {
+          const isLocked = shiftLocked && shi !== 0;
+          const cls = `shift-btn ${S.shift===sh?"on":""} ${isLocked?"locked":""}`;
+          const click = isLocked
+            ? `alert('Approval Sample must be completed for this batch before other shifts can be selected.')`
+            : `S.shift='${sh}';S.currentRound=${shi};render()`;
+          return `<div class="${cls}" onclick="${click}">${sh}</div>`;
+        }).join("")}
       </div>
+      ${shiftLocked ? `<div style="font-size:12px;color:#c2410c;margin-top:6px;">🔒 Approval Sample must be completed for this batch before other shifts unlock.</div>` : ""}
       <label>Prepared By</label>
       <select id="s-op" onchange="S.operator=this.value"><option value="">— Select operator —</option>${oOpts}</select>
       <button class="btn-primary" onclick="startInspection()">Begin Inspection →</button>
@@ -1703,6 +1730,18 @@ function startInspection() {
   S.operator = document.getElementById("s-op").value;
   if (!S.product)  { alert("Please select a product."); return; }
   if (!S.operator) { alert("Please select an operator."); return; }
+
+  // Defense in depth: the Setup screen's shift buttons already disable everything except
+  // Approval Sample until it's done for this batch — this re-checks the rule authoritatively
+  // regardless of UI state, since Approval Sample must come first for every product.
+  const gateBase = genBatchBase(S.date, PRODUCTS[S.product].label);
+  const gateInfo = loadBatchRegistry()[gateBase];
+  const approvalDone = !!(gateInfo && gateInfo.rounds && gateInfo.rounds[0] && gateInfo.rounds[0].complete);
+  if (!approvalDone && ROUND_LABELS.indexOf(S.shift) !== 0) {
+    alert("Approval Sample must be completed for this batch before any other shift can be started.");
+    return;
+  }
+
   S.batchBase = genBatchBase(S.date, PRODUCTS[S.product].label);
   S.batchDay  = 1;
   S.batchNo   = S.batchBase;
@@ -1731,6 +1770,12 @@ function continueBatch() {
   const roundIdx  = Math.max(0, ROUND_LABELS.indexOf(S.shift));
   const rounds    = info.rounds || {};
   const roundInfo = rounds[roundIdx];
+
+  const approvalDone = !!(rounds[0] && rounds[0].complete);
+  if (roundIdx !== 0 && !approvalDone) {
+    alert("Approval Sample must be completed for this batch before other shifts can be continued.");
+    return;
+  }
 
   if (roundInfo && roundInfo.complete) {
     alert(`The "${S.shift}" shift for batch ${base} is already finalised.`);
@@ -2112,91 +2157,16 @@ function rReview() {
     </div>
     <div class="nav-row no-print">
       <button class="btn-back" onclick="S.processIdx=buildProcesses(S.product).length-1;S.screen='process';render()">← Edit</button>
-      <button class="btn-next" onclick="S.screen='verify';render()">Continue to Finalise →</button>
+      <button class="btn-next" onclick="submitForVerification()">Submit for Verification →</button>
     </div>`;
 }
 
-// ═══════════════════════════════════════════════
-// SCREEN 4 — SUPERVISOR VERIFICATION
-// ═══════════════════════════════════════════════
-function rVerify() {
-  const procs   = buildProcesses(S.product);
-  const st      = braidStats();
-  const supOpts = SUPERVISORS.map(s =>
-    `<option value="${s}" ${S.supName===s?"selected":""}>${s}</option>`).join("");
-  const allKeys = allEntryKeys();
-  const verN    = allKeys.filter(k => S.verified[k]).length;
-
-  const rows = procs.map(proc => {
-    if (proc.type === "braiding") {
-      const k = `${proc.no}_braiding`;
-      const isV = S.verified[k];
-      return `<div class="ver-row">
-        <div class="ver-info">
-          <div class="sum-proc">Process ${proc.no}</div>
-          <div class="sum-char">Wire Braiding</div>
-          <div class="sum-obs">${st.passN} PASS · ${st.failN} FAIL · ${st.naN} No Run</div>
-          ${(() => {
-            const allNoRun = st.passN===0 && st.failN===0 && st.naN>0;
-            const cls = allNoRun ? "b-na" : st.failN===0 ? "b-ok" : "b-ng";
-            const lbl = allNoRun ? "No Run" : st.failN===0 ? "OK" : "NG";
-            return `<span class="badge ${cls}" style="margin-top:4px;display:inline-block;">${lbl}</span>`;
-          })()}
-        </div>
-        <button class="ver-btn ${isV?"ok":""}" onclick="toggleVerify('${k}')">${isV?"✓ Verified":"Verify"}</button>
-      </div>`;
-    }
-    return proc.checks.map(c => {
-      const key = pkey(proc.no, c.key);
-      const e   = S.roundData[0].entries[key] || S.roundData[1].entries[key] || S.roundData[2].entries[key] || S.roundData[3].entries[key];
-      const isV = S.verified[key];
-      const vCls = e?.result==="PASS" ? "b-ok" : e?.result==="NO_RUN" ? "b-na" : "b-ng";
-      const vLbl = e?.result==="PASS" ? "OK" : e?.result==="NO_RUN" ? "No Run" : "NG";
-      return `<div class="ver-row">
-        <div class="ver-info">
-          <div class="sum-proc">Process ${proc.no} · ${proc.machine}</div>
-          <div class="sum-char">${c.key}</div>
-          <div class="sum-obs">Spec: ${c.spec}</div>
-          <span class="badge ${vCls}" style="margin-top:4px;display:inline-block;">
-            ${vLbl} · ${e?.label||"—"}
-          </span>
-        </div>
-        <button class="ver-btn ${isV?"ok":""}" onclick="toggleVerify('${key}')">${isV?"✓ Verified":"Verify"}</button>
-      </div>`;
-    }).join("");
-  }).join("");
-
-  return `
-    <div class="header sup"><h1>🔍 Review Checklist</h1>
-      <p>Optional read-through before finalising — real verification happens separately via Verify Reports</p></div>
-    <div class="card">
-      <label>Reviewed By</label>
-      <select onchange="S.supName=this.value">
-        <option value="">— Select name —</option>${supOpts}
-      </select>
-    </div>
-    <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-        <div style="font-weight:700;font-size:15px;">${verN} / ${allKeys.length} checked off</div>
-        <button class="verify-all-btn" onclick="verifyAll()">Check All ✓</button>
-      </div>
-      ${rows}
-    </div>
-    <div class="nav-row no-print">
-      <button class="btn-back" onclick="S.screen='review';render()">← Back</button>
-      <button class="btn-next purple" onclick="finalise()" ${S.supName?"":"disabled"}>Finalise Report →</button>
-    </div>
-    <div style="font-size:12px;color:#94a3b8;margin-top:10px;">Note: cross-device sign-off is handled later, from the home screen's "Verify Reports" section — it doesn't block finalising here.</div>`;
-}
-
-function toggleVerify(k) { S.verified[k] = !S.verified[k]; render(); }
-function verifyAll()     { allEntryKeys().forEach(k => S.verified[k] = true); render(); }
-
-// Finalising only requires every process to be DONE (real data or No Run) for the
-// current round/shift. Independent, cross-device verification of the saved report
-// happens later via the separate "Verify Reports" flow (see Verify Reports section) —
-// it is an audit signal, not a gate, since the verifier works off the Sheet afterward.
-function finalise() {
+// The operator's job ends here: once every process is done, they submit and hand off.
+// There is no local "finalise/print" step for them anymore — verification, finalising,
+// and printing are all done later by a supervisor via the separate, cross-device
+// "Verify Reports" flow (see below). This just needs every process DONE (real data or
+// No Run) for the current round/shift.
+function submitForVerification() {
   const procs = buildProcesses(S.product);
   const notDone = procs.filter(p => !isProcDone(p));
   if (notDone.length > 0) { alert(`Please complete all processes first — ${notDone.length} remaining.`); return; }
@@ -2214,8 +2184,32 @@ function finalise() {
       roundComplete: true
     });
   }
-  S.screen = "report"; render();
-  submitToSheet(); // fires automatically once the report is finalised — no manual step needed
+  S.screen = "submitted"; render();
+  submitToSheet(); // fires automatically — no manual step needed
+}
+
+// ═══════════════════════════════════════════════
+// SCREEN 4 — SUBMITTED (operator's flow ends here; verifier takes it from here)
+// ═══════════════════════════════════════════════
+function rSubmitted() {
+  const submitHtml = S.submitStatus === "loading"
+    ? `<div class="alert">⏳ Submitting to Google Sheet…</div>`
+    : S.submitStatus === "done"
+    ? `<div class="alert green">✅ Submitted to Google Sheet.</div>`
+    : S.submitStatus === "error"
+    ? `<div class="alert">⚠ Couldn't submit automatically: ${(S.submitError||"").replace(/</g,"&lt;")} · <span style="text-decoration:underline;cursor:pointer;" onclick="submitToSheet()">Retry</span></div>`
+    : "";
+  return `
+    <div class="header">
+      <h1>✅ Submitted for Verification</h1>
+      <p>${PRODUCTS[S.product] ? PRODUCTS[S.product].label : ""}${S.batchNo?` · Batch ${S.batchNo}`:""}</p>
+    </div>
+    ${submitHtml}
+    <div class="card">
+      <div style="font-size:16px;font-weight:800;color:#1e3a5f;margin-bottom:6px;">Nice work — you're done here</div>
+      <div style="font-size:13px;color:#64748b;">This report now goes to a supervisor for review, verification and sign-off from a separate device — no further action needed from you.</div>
+    </div>
+    <button class="btn-primary" onclick="newInspection()">+ New Inspection</button>`;
 }
 
 // Saves progress mid-batch without requiring every process to be finished.
@@ -2786,8 +2780,8 @@ function rVrList() {
           <div class="sum-char">${esc(r.Date||"")} · ${esc(r["Shift / Sample"]||"")}</div>
           <div class="sum-obs">Prepared by ${esc(r.Operator||"—")}${r["Finalised At"] ? "" : " · not yet finalised"}</div>
         </div>
-        <button class="ver-btn" ${isOwn?"disabled":""} onclick="verifyVrRow(${r.__row}, '${esc(r.Operator||"")}')">
-          ${isOwn ? "Own work" : "Verify"}
+        <button class="ver-btn" ${isOwn?"disabled":""} onclick="${isOwn?"":"openVrDetail("+r.__row+")"}">
+          ${isOwn ? "Own work" : "Review →"}
         </button>
       </div>`;
     }).join("");
@@ -2801,12 +2795,114 @@ function rVrList() {
     <button class="btn-outline" onclick="S.screen='setup';render()">← Back to Home</button>`;
 }
 
+// Opens the read-through checklist for one Sheet row — reconstructed entirely from the
+// row's own column values (plus the shared, static PRODUCTS/buildProcesses spec data),
+// since this device never had the operator's in-browser session state to begin with.
+function openVrDetail(rowNum) {
+  const row = (S.vrRows || []).find(r => r.__row === rowNum);
+  if (!row) { alert("Row not found — try refreshing the list."); return; }
+  if (row.Operator && row.Operator === S.vrName) {
+    alert("You prepared this report — someone else needs to verify it.");
+    return;
+  }
+  S.vrDetailRow = row;
+  S.vrJustVerified = false;
+  S.screen = "vrdetail";
+  render();
+}
+
+// Sheet column -> (process, check) mapping, mirroring buildSheetRow()'s g() calls — only
+// these checks are captured in the current sheet schema; everything else shows as "—".
+function vrSheetValue(row, procNo, checkKey) {
+  if (procNo === "040" && checkKey === "O.D.")        return row["O.D. Measured"] || "";
+  if (procNo === "040" && checkKey === "I.D.")        return row["I.D. Measured"] || "";
+  if (procNo === "040" && checkKey === "Appearance")  return row["Appearance"] || "";
+  if (procNo === "090" && checkKey === "Length")      return row["Length"] || "";
+  if (procNo === "090" && checkKey === "Wire Cut")    return row["Wire Cut"] || "";
+  if (procNo === "090" && checkKey === "Appearance")  return row["Appearance (P090)"] || "";
+  if (procNo === "120" && checkKey === "Crimp O.D.")  return row["Crimp O.D. Measured (P120)"] || "";
+  return null; // not tracked in the sheet schema
+}
+function vrJudge(label) {
+  if (!label) return { cls:"", lbl:"—" };
+  if (label === "No Run") return { cls:"b-na", lbl:"No Run" };
+  if (/FAIL|✗|Not Smooth/.test(label)) return { cls:"b-ng", lbl:"NG" };
+  return { cls:"b-ok", lbl:"OK" };
+}
+
+function rVrDetail() {
+  const row = S.vrDetailRow;
+  if (!row) return `<div class="header"><h1>🔒 Verify Reports</h1></div>
+    <button class="btn-outline" onclick="S.screen='vrlist';render()">← Back</button>`;
+
+  const product = PRODUCTS[row.Product];
+  const procs = product ? buildProcesses(row.Product) : [];
+
+  const rows = procs.map(proc => {
+    if (proc.type === "braiding") {
+      const n = product.braiding.machines;
+      const vals = Array.from({length:n}, (_,i) => row[`BR-${String(i+1).padStart(2,"0")} O.D.`]).filter(Boolean);
+      if (!vals.length) return "";
+      const anyFail  = vals.some(v => /FAIL|✗/.test(v));
+      const allNoRun = vals.every(v => v === "No Run");
+      const cls = allNoRun ? "b-na" : anyFail ? "b-ng" : "b-ok";
+      const lbl = allNoRun ? "No Run" : anyFail ? "NG" : "OK";
+      return `<div class="ver-row">
+        <div class="ver-info">
+          <div class="sum-proc">Process ${proc.no}</div>
+          <div class="sum-char">Wire Braiding</div>
+          <div class="sum-obs">${esc(vals.join(", "))}</div>
+        </div>
+        <span class="badge ${cls}">${lbl}</span>
+      </div>`;
+    }
+    return proc.checks.map(c => {
+      const val = vrSheetValue(row, proc.no, c.key);
+      if (val === null) return "";
+      const j = vrJudge(val);
+      return `<div class="ver-row">
+        <div class="ver-info">
+          <div class="sum-proc">Process ${proc.no} · ${esc(proc.machine)}</div>
+          <div class="sum-char">${esc(c.key)}</div>
+          <div class="sum-obs">Spec: ${esc(c.spec||"—")}</div>
+        </div>
+        <span class="badge ${j.cls}">${j.lbl} · ${esc(val||"—")}</span>
+      </div>`;
+    }).join("");
+  }).join("");
+
+  const confirmBlock = S.vrJustVerified ? `
+    <div class="alert green" style="margin-bottom:14px;">✅ Verified by <strong>${esc(S.vrName)}</strong> · ${esc(row["Verified At"]||"")}</div>
+    <div class="nav-row no-print">
+      <button class="btn-outline" onclick="window.print()">🖨 Print / Save PDF</button>
+      <button class="btn-primary" style="margin-top:0;" onclick="S.screen='vrlist';loadVrList()">Done → Back to List</button>
+    </div>` : `
+    <div class="nav-row no-print">
+      <button class="btn-back" onclick="S.screen='vrlist';render()">← Back</button>
+      <button class="btn-next purple" onclick="verifyVrRow(${row.__row}, '${esc(row.Operator||"")}')">✓ Verify &amp; Finalise</button>
+    </div>`;
+
+  return `
+    <div class="header sup"><h1>🔍 Review Before Verifying</h1><p>Go through every entry, then verify</p></div>
+    <div class="card">
+      <div class="report-meta">
+        <div class="meta-item"><div class="meta-lbl">Product</div><div class="meta-val">${esc(row.Product)}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Batch No.</div><div class="meta-val">${esc(row["Batch No."]||"—")}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Date</div><div class="meta-val">${esc(row.Date)}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Prepared By</div><div class="meta-val">${esc(row.Operator)}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Shift</div><div class="meta-val">${esc(row["Shift / Sample"])}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Finalised</div><div class="meta-val" style="font-size:12px;">${esc(row["Finalised At"]||"not yet")}</div></div>
+      </div>
+      ${rows || `<div style="text-align:center;padding:16px;color:#94a3b8;font-size:13px;">No tracked readings on this row yet.</div>`}
+    </div>
+    ${confirmBlock}`;
+}
+
 async function verifyVrRow(rowNum, operatorName) {
   if (operatorName && operatorName === S.vrName) {
     alert("You prepared this report — someone else needs to verify it.");
     return;
   }
-  if (!confirm(`Mark row ${rowNum} as verified by ${S.vrName}?`)) return;
   try {
     const startCol = colLetter(SHEET_DATA_COLS + 1); // "Verified By"
     const endCol   = colLetter(SHEET_DATA_COLS + 2); // "Verified At"
@@ -2823,6 +2919,8 @@ async function verifyVrRow(rowNum, operatorName) {
       throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
     }
     S.vrRows = (S.vrRows || []).filter(r => r.__row !== rowNum);
+    if (S.vrDetailRow) S.vrDetailRow["Verified At"] = verifiedAt;
+    S.vrJustVerified = true;
     render();
   } catch (err) {
     alert("Couldn't save verification: " + err.message);
@@ -2843,7 +2941,7 @@ function fmtSavedAt(iso) {
 function resumeSession(saved) {
   S = saved;
   render();
-  if ((S.screen === "report" || S.screen === "paused") && S.submitStatus !== "done") {
+  if ((S.screen === "submitted" || S.screen === "report" || S.screen === "paused") && S.submitStatus !== "done") {
     submitToSheet();
   }
 }
