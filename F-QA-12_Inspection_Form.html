@@ -1597,16 +1597,16 @@ function rSetup() {
       <div style="font-size:17px;font-weight:800;margin-bottom:4px;">Start Inspection</div>
       <div style="font-size:13px;color:#64748b;margin-bottom:16px;">Select details below to begin.</div>
       <label>Product</label>
-      <select id="s-product"><option value="">— Select product —</option>${pOpts}</select>
+      <select id="s-product" onchange="S.product=this.value"><option value="">— Select product —</option>${pOpts}</select>
       <label>Date</label>
-      <input type="date" id="s-date" value="${S.date}">
+      <input type="date" id="s-date" value="${S.date}" onchange="S.date=this.value">
       <label>Shift</label>
       <div class="shift-row">
         ${ROUND_LABELS.map(sh =>
           `<div class="shift-btn ${S.shift===sh?"on":""}" onclick="S.shift='${sh}';render()">${sh}</div>`).join("")}
       </div>
-      <label>Operator</label>
-      <select id="s-op"><option value="">— Select operator —</option>${oOpts}</select>
+      <label>Prepared By</label>
+      <select id="s-op" onchange="S.operator=this.value"><option value="">— Select operator —</option>${oOpts}</select>
       <button class="btn-primary" onclick="startInspection()">Begin Inspection →</button>
       <button class="btn-outline" onclick="S.screen='log';render()">📊 View Inspection Log</button>
     </div>
