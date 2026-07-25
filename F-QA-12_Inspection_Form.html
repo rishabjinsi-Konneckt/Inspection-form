@@ -1353,6 +1353,30 @@ function buildProcesses(pk) {
 const ROUND_LABELS = ["Approval Sample", "09:00", "12:00", "14:00", "17:00", "19:00", "Last of Shift"];
 function emptyRound() { return { entries:{}, braiding:{} }; }
 
+// ═══════════════════════════════════════════════
+// LOCAL PERSISTENCE
+// ═══════════════════════════════════════════════
+const STORAGE_KEY = "fqa12_inspection_state_v1";
+
+function saveState() {
+  try {
+    S.savedAt = new Date().toISOString();
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(S));
+  } catch (e) { /* storage unavailable or full — fail silently */ }
+}
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) { return null; }
+}
+function clearState() {
+  try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+}
+function hasMeaningfulProgress(saved) {
+  return !!saved && (saved.screen !== "setup" || !!saved.product);
+}
+
 let S = {
   screen:"setup", product:"", date:today(), shift:ROUND_LABELS[0], operator:"",
   processIdx:0,
@@ -1413,6 +1437,7 @@ function allEntryKeys() {
 function render() {
   const fns = { setup:rSetup, process:rProcess, review:rReview, verify:rVerify, report:rReport };
   document.getElementById("app").innerHTML = fns[S.screen]();
+  saveState();
 }
 
 // ═══════════════════════════════════════════════
@@ -1937,6 +1962,7 @@ function rReport() {
 }
 
 function newInspection() {
+  clearState();
   S = { screen:"setup", product:"", date:today(), shift:ROUND_LABELS[0], operator:"",
         processIdx:0, currentRound:0, procOperators:{},
         roundData:ROUND_LABELS.map(() => emptyRound()),
@@ -1947,57 +1973,49 @@ function newInspection() {
 function esc(s) { return (s||"").replace(/\\/g,"\\\\").replace(/'/g,"\\'"); }
 
 // ═══════════════════════════════════════════════
-// EXPORT TO INSPECTION LOG
+// RESUME PROMPT (shown once at boot if unfinished work is found)
 // ═══════════════════════════════════════════════
-function exportToLog() {
-  const prod   = PRODUCTS[S.product];
-  const braid  = prod.braiding;
-  const n      = braid.machines;
-  const ms     = Array.from({length:n}, (_,i) => `BR-${String(i+1).padStart(2,"0")}`);
-
-  // Build 4 rows — one per round
-  const sheetRows = ROUND_LABELS.map((lbl, ri) => {
-    const rd  = S.roundData[ri];
-    const ent = rd.entries;
-    const brg = rd.braiding;
-
-    // P040
-    const odKey  = pkey("040","O.D.");
-    const idKey  = pkey("040","I.D.");
-    const appKey = pkey("040","Appearance");
-    const lenKey = pkey("090","Length");
-    const wcKey  = pkey("090","Wire Cut");
-    const app90  = pkey("090","Appearance");
-
-    const row = {
-      "Date":          S.date,
-      "Product":       prod.label,
-      "Shift / Sample": lbl,
-      "Operator":      S.procOperators["040"] || S.operator,
-      "O.D. Spec":     prod.extruder.od,
-      "O.D. Measured": ent[odKey]?.label  || "",
-      "I.D. Spec":     prod.extruder.id,
-      "I.D. Measured": ent[idKey]?.label  || "",
-      "Appearance":    ent[appKey]?.label || "",
-    };
-    // BR-01..BR-18
-    ms.forEach((m,i) => {
-      row[`BR-0${i+1 < 10 ? "0"+(i+1) : (i+1)} O.D.`] = brg[m]?.label || "";
-    });
-    row["Length"]     = ent[lenKey]?.label || "";
-    row["Wire Cut"]   = ent[wcKey]?.label  || "";
-    row["Appearance (P090)"] = ent[app90]?.label || "";
-    return row;
-  });
-
-  const ws   = XLSX.utils.json_to_sheet(sheetRows);
-  const wb   = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Export");
-  const fname = `F-QA-12_${S.product}_${S.date}.xlsx`;
-  XLSX.writeFile(wb, fname);
+function fmtSavedAt(iso) {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString("en-IN", { day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" });
+  } catch (e) { return iso; }
 }
 
-render();
+function resumeSession(saved) {
+  S = saved;
+  render();
+}
+function discardSession() {
+  clearState();
+  render();
+}
+
+function boot() {
+  const saved = loadState();
+  if (hasMeaningfulProgress(saved)) {
+    window.__resumeData = saved;
+    document.getElementById("app").innerHTML = `
+      <div class="header">
+        <h1>Unfinished Inspection Found</h1>
+        <p>Konneckt Hoses \u00b7 Quality Control</p>
+      </div>
+      <div class="card">
+        <div style="font-size:17px;font-weight:800;margin-bottom:4px;">Resume where you left off?</div>
+        <div style="font-size:13px;color:#64748b;margin-bottom:16px;">
+          ${saved.product ? `Product <strong>${saved.product}</strong> \u00b7 ` : ""}Last saved ${fmtSavedAt(saved.savedAt)}.
+        </div>
+        <button class="btn-primary" onclick="resumeSession(window.__resumeData)">Resume Inspection \u2192</button>
+        <button class="btn-outline" onclick="discardSession()">Discard &amp; Start Fresh</button>
+      </div>
+      <div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:4px;">F-QA-12 Rev.01 \u00b7 Eff. 01.04.19</div>`;
+  } else {
+    render();
+  }
+}
+
+boot();
 </script>
 </body>
 </html>
