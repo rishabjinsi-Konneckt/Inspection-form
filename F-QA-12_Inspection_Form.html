@@ -1526,7 +1526,7 @@ let S = {
   activeBraid:null,
   supName:"", verified:{}, finalisedAt:"",
   submitStatus:"", submitError:"",
-  batchBase:"", batchNo:"", batchDay:1,
+  batchBase:"", batchNo:"", batchDay:1, reportedThroughIdx:0,
   logFilters:{date:"",product:"",search:""}, logResults:null, logLoading:false, logError:""
 };
 
@@ -1570,9 +1570,9 @@ function saveBatchRegistry(reg) {
   try { localStorage.setItem(BATCH_REG_KEY, JSON.stringify(reg)); }
   catch (e) { /* storage unavailable — fail silently */ }
 }
-function registerBatchDay(base, product, day, dateStr) {
+function registerBatchDay(base, product, day, dateStr, resumeIdx, complete) {
   const reg = loadBatchRegistry();
-  reg[base] = { product, lastDay: day, lastDate: dateStr };
+  reg[base] = { product, lastDay: day, lastDate: dateStr, resumeIdx: resumeIdx||0, complete: !!complete };
   saveBatchRegistry(reg);
 }
 
@@ -1608,7 +1608,7 @@ function allEntryKeys() {
 // RENDER ROUTER
 // ═══════════════════════════════════════════════
 function render() {
-  const fns = { setup:rSetup, process:rProcess, review:rReview, verify:rVerify, report:rReport, log:rLog };
+  const fns = { setup:rSetup, process:rProcess, review:rReview, verify:rVerify, report:rReport, log:rLog, paused:rPaused };
   document.getElementById("app").innerHTML = fns[S.screen]();
   saveState();
 }
@@ -1625,7 +1625,7 @@ function rSetup() {
   const batchPreview = (S.product && S.date) ? genBatchBase(S.date, PRODUCTS[S.product].label) : "";
 
   const registry  = loadBatchRegistry();
-  const batchKeys = Object.keys(registry);
+  const batchKeys = Object.keys(registry).filter(b => !registry[b].complete);
   const contOpts  = batchKeys.map(b =>
     `<option value="${b}">${b} — ${registry[b].product} (day ${registry[b].lastDay} last done ${registry[b].lastDate})</option>`).join("");
 
@@ -1672,12 +1672,15 @@ function startInspection() {
   S.batchBase = genBatchBase(S.date, PRODUCTS[S.product].label);
   S.batchDay  = 1;
   S.batchNo   = S.batchBase;
+  S.reportedThroughIdx = 0;
   S.processIdx = 0; S.currentRound = 0; S.procOperators = {};
   S.roundData = ROUND_LABELS.map(() => emptyRound());
   S.activeBraid = null; S.verified = {};
   S.screen = "process"; render();
 }
 
+// Continuing a batch picks up exactly where the operator left off — process progress
+// carries forward (nothing is wiped), only the date/batch-day/processIdx move forward.
 function continueBatch() {
   const base = document.getElementById("s-batch").value;
   if (!base) { alert("Please select a batch to continue."); return; }
@@ -1693,9 +1696,11 @@ function continueBatch() {
   S.batchBase = base;
   S.batchDay  = info.lastDay + 1;
   S.batchNo   = `${base}-${S.batchDay}`;
-  S.processIdx = 0; S.currentRound = 0; S.procOperators = {};
-  S.roundData = ROUND_LABELS.map(() => emptyRound());
-  S.activeBraid = null; S.verified = {};
+  S.processIdx = info.resumeIdx || 0;
+  S.reportedThroughIdx = info.resumeIdx || 0;
+  S.currentRound = 0;
+  S.activeBraid = null;
+  // procOperators / roundData / verified intentionally NOT reset — this batch's progress continues.
   S.screen = "process"; render();
 }
 
@@ -1756,7 +1761,8 @@ function rProcess() {
       <button class="btn-next" onclick="navNext()" ${done?"":"disabled"}>
         ${S.processIdx===total-1?"Review All →":"Next →"}
       </button>
-    </div>`;
+    </div>
+    <button class="btn-outline no-print" style="background:#fefce8;color:#854d0e;border-color:#eab308;margin-top:10px;" onclick="pauseBatch()">⏸ Save Progress &amp; Continue Later</button>`;
 }
 
 // ── normal checks ──
@@ -2141,9 +2147,37 @@ function finalise() {
   const unverifiedN = allKeys.filter(k => !S.verified[k]).length;
   if (unverifiedN > 0) { alert(`Please verify all entries first — ${unverifiedN} still unverified.`); return; }
   S.finalisedAt = new Date().toLocaleString("en-IN");
-  if (S.batchBase) registerBatchDay(S.batchBase, S.product, S.batchDay, S.date);
+  if (S.batchBase) {
+    const procCount = buildProcesses(S.product).length;
+    registerBatchDay(S.batchBase, S.product, S.batchDay, S.date, procCount, true); // batch fully complete — drops off "Continue Existing Batch"
+  }
   S.screen = "report"; render();
   submitToSheet(); // fires automatically once the report is finalised — no manual step needed
+}
+
+// Saves progress mid-batch without requiring every process to be finished.
+// Writes a partial row (today's new work only) and marks the batch resumable
+// at exactly this process, so it shows up under "Continue Existing Batch" on Setup.
+function pauseBatch() {
+  if (!S.batchBase) { alert("No active batch to pause."); return; }
+  if (!hasNewProgressToReport()) { alert("Nothing new to save since your last checkpoint."); return; }
+  registerBatchDay(S.batchBase, S.product, S.batchDay, S.date, S.processIdx, false);
+  S.screen = "paused"; render();
+  submitToSheet();
+}
+
+function hasNewProgressToReport() {
+  const procs = buildProcesses(S.product);
+  const procOrder = {};
+  procs.forEach((pr, i) => { procOrder[pr.no] = i; });
+  const reportedThru = S.reportedThroughIdx || 0;
+  const braidProc = procs.find(pr => pr.type === "braiding");
+  const braidIdx  = braidProc ? procOrder[braidProc.no] : -1;
+  return S.roundData.some(rd => {
+    const hasEntry = Object.keys(rd.entries).some(k => (procOrder[k.split("_")[0]] ?? 0) >= reportedThru);
+    const hasBraid = braidIdx >= reportedThru && Object.keys(rd.braiding).length > 0;
+    return hasEntry || hasBraid;
+  });
 }
 
 // ═══════════════════════════════════════════════
@@ -2162,14 +2196,29 @@ const SHEET_HEADERS = [
 function buildSheetRows() {
   const p = PRODUCTS[S.product];
   if (!p) return [];
+  // For a multi-day batch, each day's row should only show work NEW since the last
+  // save (pause or finalise) — anything already reported in an earlier day's row is
+  // blanked out here, even though it's still kept in memory for completion checks.
+  const procs = buildProcesses(S.product);
+  const procOrder = {};
+  procs.forEach((pr, i) => { procOrder[pr.no] = i; });
+  const reportedThru = S.reportedThroughIdx || 0;
+  const braidProc = procs.find(pr => pr.type === "braiding");
+  const braidIdx  = braidProc ? procOrder[braidProc.no] : -1;
+  const braidWindowedOut = braidIdx >= 0 && braidIdx < reportedThru;
+
   return S.roundData.map((rd, i) => {
     if (!rd || !Object.keys(rd.entries).length) return null;
-    const g = (no, key) => rd.entries[pkey(no, key)] || {};
+    const g = (no, key) => {
+      if ((procOrder[no] ?? 0) < reportedThru) return {};
+      return rd.entries[pkey(no, key)] || {};
+    };
     const brCols = Array.from({length:18}, (_, bi) => {
+      if (braidWindowedOut) return "";
       const m = `BR-${String(bi+1).padStart(2,"0")}`;
       return (rd.braiding[m] && rd.braiding[m].label) || "";
     });
-    const braidPhotos = Object.keys(rd.braiding)
+    const braidPhotos = braidWindowedOut ? "" : Object.keys(rd.braiding)
       .filter(m => rd.braiding[m] && rd.braiding[m].photo)
       .map(m => `${m}: ${rd.braiding[m].photo}`)
       .join("; ");
@@ -2222,6 +2271,7 @@ async function submitToSheet(isRetry) {
       const msg = (data && data.error && (data.error.error?.message || data.error)) || "Submit failed";
       throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
     }
+    S.reportedThroughIdx = S.processIdx; // mark everything up to here as now reported to the Sheet
     S.submitStatus = "done";
     render();
   } catch (err) {
@@ -2370,8 +2420,37 @@ function newInspection() {
         roundData:ROUND_LABELS.map(() => emptyRound()),
         activeBraid:null, supName:"", verified:{}, finalisedAt:"",
         submitStatus:"", submitError:"",
-        batchBase:"", batchNo:"", batchDay:1,
+        batchBase:"", batchNo:"", batchDay:1, reportedThroughIdx:0,
         logFilters:{date:"",product:"",search:""}, logResults:null, logLoading:false, logError:"" };
+  render();
+}
+
+// ═══════════════════════════════════════════════
+// SCREEN — BATCH PAUSED
+// ═══════════════════════════════════════════════
+function rPaused() {
+  const submitHtml = S.submitStatus === "loading"
+    ? `<div class="alert">⏳ Saving progress to Google Sheet…</div>`
+    : S.submitStatus === "done"
+    ? `<div class="alert green">✅ Progress saved to Google Sheet.</div>`
+    : S.submitStatus === "error"
+    ? `<div class="alert">⚠ Couldn't save automatically: ${(S.submitError||"").replace(/</g,"&lt;")} · <span style="text-decoration:underline;cursor:pointer;" onclick="submitToSheet()">Retry</span></div>`
+    : "";
+  return `
+    <div class="header">
+      <h1>⏸ Paused</h1>
+      <p>${PRODUCTS[S.product] ? PRODUCTS[S.product].label : ""} · Batch ${S.batchNo}</p>
+    </div>
+    ${submitHtml}
+    <div class="card">
+      <div style="font-size:16px;font-weight:800;color:#1e3a5f;margin-bottom:6px;">Progress saved</div>
+      <div style="font-size:13px;color:#64748b;">This batch is now available under "Continue Existing Batch" on the home screen — pick it up any day from exactly where you stopped.</div>
+    </div>
+    <button class="btn-primary" onclick="returnHomeFromPause()">← Return to Home</button>`;
+}
+
+function returnHomeFromPause() {
+  S.screen = "setup";
   render();
 }
 
@@ -2497,7 +2576,7 @@ function fmtSavedAt(iso) {
 function resumeSession(saved) {
   S = saved;
   render();
-  if (S.screen === "report" && S.submitStatus !== "done") {
+  if ((S.screen === "report" || S.screen === "paused") && S.submitStatus !== "done") {
     submitToSheet();
   }
 }
