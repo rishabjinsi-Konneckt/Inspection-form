@@ -1,0 +1,1408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>F-QA-12 Inprocess Inspection</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f0f4f8; color: #1a202c; min-height: 100vh; }
+.app { max-width: 640px; margin: 0 auto; padding: 14px; }
+
+.header { background: linear-gradient(135deg, #1e3a5f, #2563eb); color: white; padding: 18px 20px; border-radius: 14px; margin-bottom: 14px; }
+.header h1 { font-size: 17px; font-weight: 700; }
+.header p  { font-size: 12px; opacity: 0.8; margin-top: 3px; }
+.header.sup { background: linear-gradient(135deg, #6d28d9, #7c3aed); }
+
+.progress-wrap { margin-bottom: 10px; }
+.progress-bar  { background: #e2e8f0; border-radius: 99px; height: 7px; }
+.progress-fill { background: #2563eb; height: 100%; border-radius: 99px; transition: width 0.3s; }
+.step-label    { font-size: 12px; color: #64748b; text-align: right; margin-top: 4px; }
+
+.card { background: white; border-radius: 14px; padding: 20px; margin-bottom: 14px; box-shadow: 0 2px 10px rgba(0,0,0,0.07); }
+
+label { font-size: 13px; font-weight: 600; color: #475569; display: block; margin: 14px 0 5px; }
+label:first-of-type { margin-top: 4px; }
+select, input[type="date"] { width: 100%; padding: 13px 14px; border: 2px solid #e2e8f0; border-radius: 10px; font-size: 15px; color: #1a202c; background: white; outline: none; }
+select:focus, input[type="date"]:focus { border-color: #2563eb; }
+
+.shift-row { display: flex; gap: 8px; margin-top: 5px; }
+.shift-btn { flex: 1; padding: 11px 4px; border: 2px solid #e2e8f0; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; background: white; color: #64748b; text-align: center; }
+.shift-btn.on { background: #eff6ff; border-color: #2563eb; color: #2563eb; }
+
+.proc-badge   { background: #1e3a5f; color: white; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; display: inline-block; margin-bottom: 8px; }
+.proc-title   { font-size: 17px; font-weight: 700; }
+.proc-machine { font-size: 13px; color: #64748b; margin-top: 2px; }
+.proc-divider { border: none; border-top: 1px solid #f1f5f9; margin: 14px 0; }
+
+/* ── CHECK ITEMS ── */
+.check-item { border: 2px solid #f1f5f9; border-radius: 12px; padding: 14px; margin-top: 12px; }
+.check-item.done-pass { border-color: #bbf7d0; background: #f0fdf4; }
+.check-item.done-fail { border-color: #fecaca; background: #fff5f5; }
+.check-char   { font-weight: 700; font-size: 15px; }
+.check-spec   { font-size: 12px; color: #64748b; margin-top: 3px; }
+.check-method { font-size: 11px; color: #94a3b8; margin-top: 2px; }
+.check-rec    { font-size: 12px; margin-top: 8px; padding: 6px 10px; background: rgba(0,0,0,0.04); border-radius: 7px; display: flex; justify-content: space-between; color: #475569; }
+
+/* ── PASS / FAIL BUTTONS ── */
+.pf-row { display: flex; gap: 8px; margin-top: 11px; }
+.pf-btn { flex: 1; padding: 14px 8px; border: 2px solid #e2e8f0; border-radius: 10px; font-size: 15px; font-weight: 700; cursor: pointer; text-align: center; background: white; color: #64748b; }
+.pf-btn:active { transform: scale(0.97); }
+.pf-btn.s-pass         { background: #16a34a; border-color: #15803d; color: white; }
+.pf-btn.s-fail         { background: #ef4444; border-color: #dc2626; color: white; }
+.pf-btn.s-pass-pending { background: #dcfce7; border-color: #16a34a; color: #15803d; }
+
+/* ── SUB-RANGES ── */
+.sub-label { font-size: 12px; font-weight: 600; color: #475569; margin-top: 10px; margin-bottom: 5px; }
+.sub-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.sub-btn { padding: 9px 12px; border: 2px solid #e2e8f0; border-radius: 9px; font-size: 13px; font-weight: 600; cursor: pointer; background: white; color: #475569; }
+.sub-btn:active { transform: scale(0.96); }
+.sub-btn.on { background: #1d4ed8; border-color: #1e40af; color: white; }
+
+/* ── BAND GRID ── */
+.bands-label { font-size: 12px; font-weight: 600; color: #475569; margin-top: 11px; margin-bottom: 5px; }
+.bands-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.manual-row { display: flex; gap: 8px; margin-top: 11px; align-items: center; }
+.round-tabs { display: flex; gap: 6px; padding: 10px 16px 4px; flex-wrap: wrap; }
+.round-tab { flex: 1; min-width: 70px; padding: 8px 6px; border-radius: 8px; font-size: 12px; font-weight: 700; text-align: center; cursor: pointer; border: 2px solid #e2e8f0; color: #64748b; background: white; }
+.rt-active  { background: #2563eb; border-color: #2563eb; color: white; }
+.rt-done    { background: #dcfce7; border-color: #16a34a; color: #15803d; }
+.rt-empty   { background: #f8fafc; color: #94a3b8; }
+.round-banner { text-align: center; font-size: 13px; color: #64748b; padding: 2px 0 8px; }
+.manual-input { flex: 1; padding: 12px 14px; border: 2px solid #e2e8f0; border-radius: 10px; font-size: 18px; font-weight: 700; color: #1e3a5f; text-align: center; outline: none; }
+.manual-input:focus { border-color: #2563eb; }
+.manual-confirm { padding: 12px 18px; background: #2563eb; color: white; border: none; border-radius: 10px; font-size: 15px; font-weight: 700; cursor: pointer; }
+.manual-confirm:active { transform: scale(0.97); }
+.manual-unit { font-size: 14px; color: #64748b; font-weight: 600; }
+.band-btn { padding: 10px 11px; border: 2px solid #e2e8f0; border-radius: 9px; font-size: 13px; font-weight: 600; cursor: pointer; background: white; color: #475569; }
+.band-btn:active { transform: scale(0.96); }
+.band-btn.b-pass-opt { border-color: #bbf7d0; color: #15803d; }
+.band-btn.b-fail-opt { border-color: #fecaca; color: #dc2626; }
+.band-btn.b-na-opt   { border-color: #e2e8f0; color: #64748b; background: #f8fafc; }
+.band-btn.b-pass-on  { background: #16a34a; border-color: #15803d; color: white; }
+.band-btn.b-fail-on  { background: #ef4444; border-color: #dc2626; color: white; }
+.band-btn.b-na-on    { background: #64748b; border-color: #475569; color: white; }
+
+/* ── WIRE BRAIDING ── */
+.braid-info { background: #f8fafc; border-radius: 10px; padding: 12px; margin-bottom: 12px; font-size: 13px; color: #475569; line-height: 1.7; }
+.braid-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; }
+
+.braid-cell { border: 2px solid #e2e8f0; border-radius: 10px; padding: 10px 4px; text-align: center; cursor: pointer; background: white; transition: all 0.15s; }
+.braid-cell:active { transform: scale(0.94); }
+.braid-cell.b-active { border-color: #f59e0b; background: #fefce8; box-shadow: 0 0 0 3px rgba(245,158,11,0.25); }
+.braid-cell.b-pass   { border-color: #16a34a; background: #dcfce7; }
+.braid-cell.b-fail   { border-color: #ef4444; background: #fee2e2; }
+.braid-cell.b-na     { border-color: #e2e8f0; background: #f1f5f9; opacity: 0.6; }
+.braid-machine { font-size: 12px; font-weight: 700; }
+.braid-status  { font-size: 10px; margin-top: 3px; color: #64748b; }
+.braid-cell.b-pass .braid-status { color: #15803d; font-weight: 700; }
+.braid-cell.b-fail .braid-status { color: #dc2626; font-weight: 700; }
+.braid-cell.b-active .braid-status { color: #b45309; font-weight: 700; }
+
+/* ── BRAIDING SELECTION PANEL ── */
+.braid-panel { margin-top: 12px; border: 2px solid #f59e0b; border-radius: 12px; padding: 14px; background: #fffbeb; }
+.braid-panel-title { font-size: 14px; font-weight: 700; color: #92400e; margin-bottom: 10px; }
+.braid-panel-opts { display: flex; flex-wrap: wrap; gap: 7px; }
+.braid-opt { padding: 11px 13px; border: 2px solid; border-radius: 9px; font-size: 13px; font-weight: 700; cursor: pointer; text-align: center; }
+.braid-opt:active { transform: scale(0.96); }
+.braid-opt.bo-pass { background: white; border-color: #bbf7d0; color: #15803d; }
+.braid-opt.bo-fail { background: white; border-color: #fecaca; color: #dc2626; }
+.braid-opt.bo-na   { background: white; border-color: #e2e8f0; color: #64748b; }
+.braid-panel-cancel { margin-top: 10px; font-size: 12px; color: #94a3b8; cursor: pointer; text-align: right; }
+.braid-panel-cancel:hover { color: #64748b; }
+
+/* Tally chips */
+.braid-tally { display: flex; gap: 8px; margin-top: 12px; }
+.tally-chip { flex: 1; padding: 8px; border-radius: 9px; font-size: 13px; font-weight: 700; text-align: center; }
+.t-pass { background: #dcfce7; color: #15803d; }
+.t-fail { background: #fee2e2; color: #b91c1c; }
+.t-na   { background: #f1f5f9; color: #64748b; }
+
+/* ── NAV ── */
+.nav-row  { display: flex; gap: 10px; margin-top: 6px; }
+.btn-back { flex: 1; background: white; color: #475569; border: 2px solid #e2e8f0; padding: 15px; border-radius: 11px; font-size: 15px; font-weight: 600; cursor: pointer; }
+.btn-next { flex: 2.5; background: #2563eb; color: white; border: none; padding: 15px; border-radius: 11px; font-size: 16px; font-weight: 700; cursor: pointer; }
+.btn-next:disabled { background: #cbd5e1; cursor: not-allowed; }
+.btn-next.purple { background: #7c3aed; }
+.btn-primary { width: 100%; padding: 16px; background: #1e3a5f; color: white; border: none; border-radius: 11px; font-size: 16px; font-weight: 700; cursor: pointer; margin-top: 16px; }
+.btn-outline  { width: 100%; padding: 14px; background: white; color: #1e3a5f; border: 2px solid #1e3a5f; border-radius: 11px; font-size: 15px; font-weight: 600; cursor: pointer; margin-top: 8px; }
+
+.alert       { background: #fff7ed; border: 1px solid #fed7aa; border-radius: 10px; padding: 12px 14px; font-size: 13px; color: #9a3412; margin-bottom: 12px; }
+.alert.green { background: #f0fdf4; border-color: #bbf7d0; color: #15803d; }
+
+.badge  { padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+.b-ok   { background: #dcfce7; color: #16a34a; }
+.b-ng   { background: #fee2e2; color: #dc2626; }
+
+.sum-row  { display: flex; justify-content: space-between; align-items: flex-start; padding: 11px 0; border-bottom: 1px solid #f8fafc; gap: 10px; }
+.sum-proc { font-size: 11px; color: #94a3b8; font-weight: 600; text-transform: uppercase; }
+.sum-char { font-size: 14px; font-weight: 600; margin-top: 1px; }
+.sum-obs  { font-size: 12px; color: #64748b; margin-top: 2px; }
+
+.ver-row  { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid #f8fafc; gap: 10px; }
+.ver-info { flex: 1; }
+.ver-btn  { padding: 9px 14px; border: 2px solid #e2e8f0; border-radius: 9px; font-size: 13px; font-weight: 700; cursor: pointer; background: white; color: #64748b; white-space: nowrap; min-width: 90px; text-align: center; }
+.ver-btn.ok { background: #dcfce7; border-color: #16a34a; color: #15803d; }
+.verify-all-btn { background: #7c3aed; color: white; border: none; padding: 9px 16px; border-radius: 9px; font-size: 13px; font-weight: 700; cursor: pointer; }
+
+.report-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 16px; }
+.meta-item { background: #f8fafc; padding: 10px 12px; border-radius: 9px; }
+.meta-lbl  { font-size: 11px; color: #94a3b8; text-transform: uppercase; letter-spacing: .04em; }
+.meta-val  { font-weight: 700; font-size: 14px; margin-top: 2px; }
+
+.report-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.report-table th { background: #1e3a5f; color: white; padding: 8px 7px; text-align: left; }
+.report-table td { padding: 7px; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
+.report-table tr:nth-child(even) td { background: #f8fafc; }
+.report-table tr.first td { border-top: 2px solid #e2e8f0; }
+
+@media print {
+  .no-print { display: none !important; }
+  body { background: white; }
+  .app { padding: 0; max-width: 100%; }
+  .card { box-shadow: none; border: 1px solid #ddd; margin-bottom: 8px; page-break-inside: avoid; }
+}
+</style>
+</head>
+<body>
+<div class="app" id="app"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+
+// ═══════════════════════════════════════════════
+// PRODUCT DATABASE
+// ═══════════════════════════════════════════════
+const PRODUCTS = {
+  "12ESBB45": {
+    label: "12ESBB45",
+    desc:  "",
+    extruder: {
+      od: "11.00–12.20 mm",
+      odBands: [
+        { label:"Below  <11.00 ✗", r:"FAIL" },
+        { label:"11.00–11.09",     r:"PASS" },
+        { label:"11.10–11.19",     r:"PASS" },
+        { label:"11.20–11.29",     r:"PASS" },
+        { label:"11.30–11.39",     r:"PASS" },
+        { label:"11.40–11.49",     r:"PASS" },
+        { label:"11.50–11.59",     r:"PASS" },
+        { label:"11.60–11.69",     r:"PASS" },
+        { label:"11.70–11.79",     r:"PASS" },
+        { label:"11.80–11.89",     r:"PASS" },
+        { label:"11.90–11.99",     r:"PASS" },
+        { label:"12.00–12.09",     r:"PASS" },
+        { label:"12.10–12.19",     r:"PASS" },
+        { label:"Above  >12.20 ✗", r:"FAIL" }
+      ],
+      id: "8.00–8.60 mm",
+      idBands: [
+        { label:"Below  <8.00 ✗",  r:"FAIL" },
+        { label:"8.00–8.09",       r:"PASS" },
+        { label:"8.10–8.19",       r:"PASS" },
+        { label:"8.20–8.29",       r:"PASS" },
+        { label:"8.30–8.39",       r:"PASS" },
+        { label:"8.40–8.49",       r:"PASS" },
+        { label:"8.50–8.59",       r:"PASS" },
+        { label:"Above  >8.60 ✗",  r:"FAIL" }
+      ]
+    },
+    braiding: {
+      od: "13.00–14.00 mm", pitch: "2.00–2.50 mm", machines: 18,
+      odBands: [
+        { label:"13.00–13.25", r:"PASS" },
+        { label:"13.26–13.50", r:"PASS" },
+        { label:"13.51–13.75", r:"PASS" },
+        { label:"13.76–14.00", r:"PASS" }
+      ]
+    },
+    crimping: {
+      pressBands: [
+        { label:"Below  <15 ✗", r:"FAIL" },
+        { label:"15–18",        r:"PASS" },
+        { label:"19–22",        r:"PASS" },
+        { label:"23–26",        r:"PASS" },
+        { label:"27–30",        r:"PASS" },
+        { label:"Above  >30 ✗", r:"FAIL" }
+      ],
+      loadBands: [
+        { label:"Below  <40 ✗", r:"FAIL" },
+        { label:"40–45",        r:"PASS" },
+        { label:"46–50",        r:"PASS" },
+        { label:"51–55",        r:"PASS" },
+        { label:"56–60",        r:"PASS" },
+        { label:"Above  >60 ✗", r:"FAIL" }
+      ]
+    },
+    flow: ["030","040","050","060","070","080","090","100","120","130"]
+  },
+
+  "12ESBB60": {
+    label: "12ESBB60",
+    desc:  "",
+    extruder: {
+      od: "13.00–14.00 mm",
+      odBands: [
+        { label:"Below  <13.00 ✗", r:"FAIL" },
+        { label:"13.00–13.25",     r:"PASS" },
+        { label:"13.26–13.50",     r:"PASS" },
+        { label:"13.51–13.75",     r:"PASS" },
+        { label:"13.76–14.00",     r:"PASS" },
+        { label:"Above  >14.00 ✗", r:"FAIL" }
+      ],
+      id: "9.30–10.30 mm",
+      idBands: [
+        { label:"Below  <9.30 ✗",  r:"FAIL" },
+        { label:"9.30–9.55",       r:"PASS" },
+        { label:"9.56–9.80",       r:"PASS" },
+        { label:"9.81–10.05",      r:"PASS" },
+        { label:"10.06–10.30",     r:"PASS" },
+        { label:"Above  >10.30 ✗", r:"FAIL" }
+      ]
+    },
+    braiding: {
+      od: "13.00–14.00 mm", pitch: "2.00–2.50 mm", machines: 18,
+      odBands: [
+        { label:"13.00–13.25", r:"PASS" },
+        { label:"13.26–13.50", r:"PASS" },
+        { label:"13.51–13.75", r:"PASS" },
+        { label:"13.76–14.00", r:"PASS" }
+      ]
+    },
+    crimping: {
+      pressBands: [
+        { label:"Below  <15 ✗", r:"FAIL" },
+        { label:"15–18",        r:"PASS" },
+        { label:"19–22",        r:"PASS" },
+        { label:"23–26",        r:"PASS" },
+        { label:"27–30",        r:"PASS" },
+        { label:"Above  >30 ✗", r:"FAIL" }
+      ],
+      loadBands: [
+        { label:"Below  <40 ✗", r:"FAIL" },
+        { label:"40–45",        r:"PASS" },
+        { label:"46–50",        r:"PASS" },
+        { label:"51–55",        r:"PASS" },
+        { label:"56–60",        r:"PASS" },
+        { label:"Above  >60 ✗", r:"FAIL" }
+      ]
+    },
+    flow: ["030","040","050","060","070","080","090","100","120","130"]
+  },
+
+  "12ENBS45": {
+    label: "12ENBS45",
+    desc:  "",
+    extruder: {
+      od: "11.00–12.20 mm",
+      odBands: [
+        { label:"Below  <11.00 ✗", r:"FAIL" },
+        { label:"11.00–11.09",     r:"PASS" },
+        { label:"11.10–11.19",     r:"PASS" },
+        { label:"11.20–11.29",     r:"PASS" },
+        { label:"11.30–11.39",     r:"PASS" },
+        { label:"11.40–11.49",     r:"PASS" },
+        { label:"11.50–11.59",     r:"PASS" },
+        { label:"11.60–11.69",     r:"PASS" },
+        { label:"11.70–11.79",     r:"PASS" },
+        { label:"11.80–11.89",     r:"PASS" },
+        { label:"11.90–11.99",     r:"PASS" },
+        { label:"12.00–12.09",     r:"PASS" },
+        { label:"12.10–12.19",     r:"PASS" },
+        { label:"Above  >12.20 ✗", r:"FAIL" }
+      ],
+      id: "8.00–8.60 mm",
+      idBands: [
+        { label:"Below  <8.00 ✗",  r:"FAIL" },
+        { label:"8.00–8.09",       r:"PASS" },
+        { label:"8.10–8.19",       r:"PASS" },
+        { label:"8.20–8.29",       r:"PASS" },
+        { label:"8.30–8.39",       r:"PASS" },
+        { label:"8.40–8.49",       r:"PASS" },
+        { label:"8.50–8.59",       r:"PASS" },
+        { label:"Above  >8.60 ✗",  r:"FAIL" }
+      ]
+    },
+    braiding: {
+      od: "13.00–14.00 mm", pitch: "2.00–2.50 mm", machines: 18,
+      odBands: [
+        { label:"13.00–13.25", r:"PASS" },
+        { label:"13.26–13.50", r:"PASS" },
+        { label:"13.51–13.75", r:"PASS" },
+        { label:"13.76–14.00", r:"PASS" }
+      ]
+    },
+    crimping: {
+      pressBands: [
+        { label:"Below  <15 ✗", r:"FAIL" },
+        { label:"15–18",        r:"PASS" },
+        { label:"19–22",        r:"PASS" },
+        { label:"23–26",        r:"PASS" },
+        { label:"27–30",        r:"PASS" },
+        { label:"Above  >30 ✗", r:"FAIL" }
+      ],
+      loadBands: [
+        { label:"Below  <40 ✗", r:"FAIL" },
+        { label:"40–45",        r:"PASS" },
+        { label:"46–50",        r:"PASS" },
+        { label:"51–55",        r:"PASS" },
+        { label:"56–60",        r:"PASS" },
+        { label:"Above  >60 ✗", r:"FAIL" }
+      ]
+    },
+    flow: ["030","040","050","060","070","080","090","100","120","130"]
+  },
+
+  "14ESBB45": {
+    label: "14ESBB45",
+    desc:  "",
+    extruder: {
+      od: "13.00–14.00 mm",
+      odBands: [
+        { label:"Below  <13.00 ✗", r:"FAIL" },
+        { label:"13.00–13.25",     r:"PASS" },
+        { label:"13.26–13.50",     r:"PASS" },
+        { label:"13.51–13.75",     r:"PASS" },
+        { label:"13.76–14.00",     r:"PASS" },
+        { label:"Above  >14.00 ✗", r:"FAIL" }
+      ],
+      id: "9.30–10.30 mm",
+      idBands: [
+        { label:"Below  <9.30 ✗",  r:"FAIL" },
+        { label:"9.30–9.55",       r:"PASS" },
+        { label:"9.56–9.80",       r:"PASS" },
+        { label:"9.81–10.05",      r:"PASS" },
+        { label:"10.06–10.30",     r:"PASS" },
+        { label:"Above  >10.30 ✗", r:"FAIL" }
+      ]
+    },
+    braiding: {
+      od: "13.00–14.00 mm", pitch: "2.00–2.50 mm", machines: 18,
+      odBands: [
+        { label:"13.00–13.25", r:"PASS" },
+        { label:"13.26–13.50", r:"PASS" },
+        { label:"13.51–13.75", r:"PASS" },
+        { label:"13.76–14.00", r:"PASS" }
+      ]
+    },
+    crimping: {
+      pressBands: [
+        { label:"Below  <15 ✗", r:"FAIL" },
+        { label:"15–18",        r:"PASS" },
+        { label:"19–22",        r:"PASS" },
+        { label:"23–26",        r:"PASS" },
+        { label:"27–30",        r:"PASS" },
+        { label:"Above  >30 ✗", r:"FAIL" }
+      ],
+      loadBands: [
+        { label:"Below  <40 ✗", r:"FAIL" },
+        { label:"40–45",        r:"PASS" },
+        { label:"46–50",        r:"PASS" },
+        { label:"51–55",        r:"PASS" },
+        { label:"56–60",        r:"PASS" },
+        { label:"Above  >60 ✗", r:"FAIL" }
+      ]
+    },
+    flow: ["030","040","050","060","070","080","090","100","120","130"]
+  },
+
+  "14ESBB60": {
+    label: "14ESBB60",
+    desc:  "",
+    extruder: {
+      od: "13.00–14.00 mm",
+      odBands: [
+        { label:"Below  <13.00 ✗", r:"FAIL" },
+        { label:"13.00–13.25",     r:"PASS" },
+        { label:"13.26–13.50",     r:"PASS" },
+        { label:"13.51–13.75",     r:"PASS" },
+        { label:"13.76–14.00",     r:"PASS" },
+        { label:"Above  >14.00 ✗", r:"FAIL" }
+      ],
+      id: "9.30–10.30 mm",
+      idBands: [
+        { label:"Below  <9.30 ✗",  r:"FAIL" },
+        { label:"9.30–9.55",       r:"PASS" },
+        { label:"9.56–9.80",       r:"PASS" },
+        { label:"9.81–10.05",      r:"PASS" },
+        { label:"10.06–10.30",     r:"PASS" },
+        { label:"Above  >10.30 ✗", r:"FAIL" }
+      ]
+    },
+    braiding: {
+      od: "13.00–14.00 mm", pitch: "2.00–2.50 mm", machines: 18,
+      odBands: [
+        { label:"13.00–13.25", r:"PASS" },
+        { label:"13.26–13.50", r:"PASS" },
+        { label:"13.51–13.75", r:"PASS" },
+        { label:"13.76–14.00", r:"PASS" }
+      ]
+    },
+    crimping: {
+      pressBands: [
+        { label:"Below  <15 ✗", r:"FAIL" },
+        { label:"15–18",        r:"PASS" },
+        { label:"19–22",        r:"PASS" },
+        { label:"23–26",        r:"PASS" },
+        { label:"27–30",        r:"PASS" },
+        { label:"Above  >30 ✗", r:"FAIL" }
+      ],
+      loadBands: [
+        { label:"Below  <40 ✗", r:"FAIL" },
+        { label:"40–45",        r:"PASS" },
+        { label:"46–50",        r:"PASS" },
+        { label:"51–55",        r:"PASS" },
+        { label:"56–60",        r:"PASS" },
+        { label:"Above  >60 ✗", r:"FAIL" }
+      ]
+    },
+    flow: ["030","040","050","060","070","080","090","100","120","130"]
+  },
+
+  "14ESBN45-16": {
+    label: "14ESBN45-16",
+    desc:  "",
+    extruder: {
+      od: "13.00–14.00 mm",
+      odBands: [
+        { label:"Below  <13.00 ✗", r:"FAIL" },
+        { label:"13.00–13.25",     r:"PASS" },
+        { label:"13.26–13.50",     r:"PASS" },
+        { label:"13.51–13.75",     r:"PASS" },
+        { label:"13.76–14.00",     r:"PASS" },
+        { label:"Above  >14.00 ✗", r:"FAIL" }
+      ],
+      id: "9.30–10.30 mm",
+      idBands: [
+        { label:"Below  <9.30 ✗",  r:"FAIL" },
+        { label:"9.30–9.55",       r:"PASS" },
+        { label:"9.56–9.80",       r:"PASS" },
+        { label:"9.81–10.05",      r:"PASS" },
+        { label:"10.06–10.30",     r:"PASS" },
+        { label:"Above  >10.30 ✗", r:"FAIL" }
+      ]
+    },
+    braiding: {
+      od: "13.00–14.00 mm", pitch: "2.00–2.50 mm", machines: 18,
+      odBands: [
+        { label:"13.00–13.25", r:"PASS" },
+        { label:"13.26–13.50", r:"PASS" },
+        { label:"13.51–13.75", r:"PASS" },
+        { label:"13.76–14.00", r:"PASS" }
+      ]
+    },
+    crimping: {
+      pressBands: [
+        { label:"Below  <15 ✗", r:"FAIL" },
+        { label:"15–18",        r:"PASS" },
+        { label:"19–22",        r:"PASS" },
+        { label:"23–26",        r:"PASS" },
+        { label:"27–30",        r:"PASS" },
+        { label:"Above  >30 ✗", r:"FAIL" }
+      ],
+      loadBands: [
+        { label:"Below  <40 ✗", r:"FAIL" },
+        { label:"40–45",        r:"PASS" },
+        { label:"46–50",        r:"PASS" },
+        { label:"51–55",        r:"PASS" },
+        { label:"56–60",        r:"PASS" },
+        { label:"Above  >60 ✗", r:"FAIL" }
+      ]
+    },
+    flow: ["030","040","050","060","070","080","090","100","120","130"]
+  },
+
+  "14ESBN45-19": {
+    label: "14ESBN45-19",
+    desc:  "",
+    extruder: {
+      od: "13.00–14.00 mm",
+      odBands: [
+        { label:"Below  <13.00 ✗", r:"FAIL" },
+        { label:"13.00–13.25",     r:"PASS" },
+        { label:"13.26–13.50",     r:"PASS" },
+        { label:"13.51–13.75",     r:"PASS" },
+        { label:"13.76–14.00",     r:"PASS" },
+        { label:"Above  >14.00 ✗", r:"FAIL" }
+      ],
+      id: "9.30–10.30 mm",
+      idBands: [
+        { label:"Below  <9.30 ✗",  r:"FAIL" },
+        { label:"9.30–9.55",       r:"PASS" },
+        { label:"9.56–9.80",       r:"PASS" },
+        { label:"9.81–10.05",      r:"PASS" },
+        { label:"10.06–10.30",     r:"PASS" },
+        { label:"Above  >10.30 ✗", r:"FAIL" }
+      ]
+    },
+    braiding: {
+      od: "13.00–14.00 mm", pitch: "2.00–2.50 mm", machines: 18,
+      odBands: [
+        { label:"13.00–13.25", r:"PASS" },
+        { label:"13.26–13.50", r:"PASS" },
+        { label:"13.51–13.75", r:"PASS" },
+        { label:"13.76–14.00", r:"PASS" }
+      ]
+    },
+    crimping: {
+      pressBands: [
+        { label:"Below  <15 ✗", r:"FAIL" },
+        { label:"15–18",        r:"PASS" },
+        { label:"19–22",        r:"PASS" },
+        { label:"23–26",        r:"PASS" },
+        { label:"27–30",        r:"PASS" },
+        { label:"Above  >30 ✗", r:"FAIL" }
+      ],
+      loadBands: [
+        { label:"Below  <40 ✗", r:"FAIL" },
+        { label:"40–45",        r:"PASS" },
+        { label:"46–50",        r:"PASS" },
+        { label:"51–55",        r:"PASS" },
+        { label:"56–60",        r:"PASS" },
+        { label:"Above  >60 ✗", r:"FAIL" }
+      ]
+    },
+    flow: ["030","040","050","060","070","080","090","100","120","130"]
+  },
+
+  "14ENBN45": {
+    label: "14ENBN45",
+    desc:  "",
+    extruder: {
+      od: "13.00–14.00 mm",
+      odBands: [
+        { label:"Below  <13.00 ✗", r:"FAIL" },
+        { label:"13.00–13.25",     r:"PASS" },
+        { label:"13.26–13.50",     r:"PASS" },
+        { label:"13.51–13.75",     r:"PASS" },
+        { label:"13.76–14.00",     r:"PASS" },
+        { label:"Above  >14.00 ✗", r:"FAIL" }
+      ],
+      id: "9.30–10.30 mm",
+      idBands: [
+        { label:"Below  <9.30 ✗",  r:"FAIL" },
+        { label:"9.30–9.55",       r:"PASS" },
+        { label:"9.56–9.80",       r:"PASS" },
+        { label:"9.81–10.05",      r:"PASS" },
+        { label:"10.06–10.30",     r:"PASS" },
+        { label:"Above  >10.30 ✗", r:"FAIL" }
+      ]
+    },
+    braiding: {
+      od: "13.00–14.00 mm", pitch: "2.00–2.50 mm", machines: 18,
+      odBands: [
+        { label:"13.00–13.25", r:"PASS" },
+        { label:"13.26–13.50", r:"PASS" },
+        { label:"13.51–13.75", r:"PASS" },
+        { label:"13.76–14.00", r:"PASS" }
+      ]
+    },
+    crimping: {
+      pressBands: [
+        { label:"Below  <15 ✗", r:"FAIL" },
+        { label:"15–18",        r:"PASS" },
+        { label:"19–22",        r:"PASS" },
+        { label:"23–26",        r:"PASS" },
+        { label:"27–30",        r:"PASS" },
+        { label:"Above  >30 ✗", r:"FAIL" }
+      ],
+      loadBands: [
+        { label:"Below  <40 ✗", r:"FAIL" },
+        { label:"40–45",        r:"PASS" },
+        { label:"46–50",        r:"PASS" },
+        { label:"51–55",        r:"PASS" },
+        { label:"56–60",        r:"PASS" },
+        { label:"Above  >60 ✗", r:"FAIL" }
+      ]
+    },
+    flow: ["030","040","050","060","070","080","090","100","120","130"]
+  }
+};
+
+const OPERATORS   = ["Amit","Ankita","Dinesh","Kelash","Ramesh","Ramu","Suresh","Other"];
+const SUPERVISORS = ["Saksham","QA Manager","Shift Supervisor","Other"];
+
+// ═══════════════════════════════════════════════
+// PROCESS LIBRARY
+// ═══════════════════════════════════════════════
+function buildProcesses(pk) {
+  const p = PRODUCTS[pk];
+  const lib = {
+    "030": {
+      no:"030", machine:"Mixing Mill", name:"Material Mixing",
+      checks:[
+        { key:"Hardness",      spec:"≥ 75",         method:"Hardness Tester",
+          type:"pf_sub", failLabel:"< 75  ✗  FAIL",
+          passRanges:["75–77","78–80","81–83","84–86","87–90","> 90"] },
+        { key:"Tensile",       spec:"≥ 35",          method:"Tensile Machine",
+          type:"pf_sub", failLabel:"< 35  ✗  FAIL",
+          passRanges:["35–37","38–40","41–43","44–46","47–49","50–52","> 52"] },
+        { key:"Button Weight", spec:"Per standard",  method:"Weighing Scale",
+          type:"manual", unit:"g" },
+        { key:"TS2",           spec:"1.0–3.0",        method:"ODR",
+          type:"bands", bands:[
+        { label:"Below  <1.0 ✗", r:"FAIL" },
+        { label:"1.00–1.24", r:"PASS" },
+        { label:"1.25–1.49", r:"PASS" },
+        { label:"1.50–1.74", r:"PASS" },
+        { label:"1.75–1.99", r:"PASS" },
+        { label:"2.00–2.24", r:"PASS" },
+        { label:"2.25–2.49", r:"PASS" },
+        { label:"2.50–2.74", r:"PASS" },
+        { label:"2.75–2.99", r:"PASS" },
+        { label:"Above  >3.0 ✗", r:"FAIL" }
+          ] },
+        { key:"TC90",          spec:"≥ 8",           method:"ODR",
+          type:"pf_sub", failLabel:"< 8  ✗  FAIL",
+          passRanges:["8–10","11–13","14–16","17–19","> 19"] }
+      ]
+    },
+    "040": {
+      no:"040", machine:"Rubber Extruder (RE-01)", name:"Material Extruding",
+      checks:[
+        { key:"O.D.", spec:p.extruder.od, method:"Vernier Caliper",
+          type:"bands", bands:p.extruder.odBands },
+        { key:"I.D.", spec:p.extruder.id, method:"Vernier Caliper",
+          type:"bands", bands:p.extruder.idBands },
+        { key:"Appearance", spec:"Smooth", method:"Visual",
+          type:"pf", passLabel:"Smooth  ✓", failLabel:"Not Smooth  ✗" }
+      ]
+    },
+    "050": {
+      no:"050", machine:"Vulcanizer", name:"Vulcanization",
+      checks:[
+        { key:"Pressure", spec:"55 Kgf (set point)", method:"Pressure Gauge",
+          type:"pf", passLabel:"55 Kgf  ✓  OK", failLabel:"Pressure Off  ✗" }
+      ]
+    },
+    "060": {
+      no:"060", machine:"Air Compressor", name:"Inline Testing",
+      checks:[
+        { key:"Leakage",  spec:"No leak at 5 Kgf", method:"Apply Pressure",
+          type:"pf", passLabel:"No Leak  ✓", failLabel:"Leak Found  ✗" },
+        { key:"Pressure", spec:"72 PSI (set point)", method:"Pressure Gauge",
+          type:"pf", passLabel:"72 PSI  ✓  OK", failLabel:"Pressure Off  ✗" }
+      ]
+    },
+    "070": {
+      no:"070", machine:"Wire Braiding Machines", name:"Wire Braiding",
+      type:"braiding", checks:[]
+    },
+    "080": {
+      no:"080", machine:"Bundle Counter", name:"Length Counter / Bundle Check",
+      checks:[
+        { key:"O.D. (Ring Die)", spec:"Passes 14 mm ring die", method:"Ring Die",
+          type:"pf", passLabel:"Passes  ✓", failLabel:"Does Not Pass  ✗" },
+        { key:"Wire Cut",   spec:"No wire cut",  method:"Visual",
+          type:"pf", passLabel:"None  ✓", failLabel:"Wire Cut Found  ✗" },
+        { key:"Appearance", spec:"No cut mark",  method:"Visual",
+          type:"pf", passLabel:"Clean  ✓", failLabel:"Defect Found  ✗" }
+      ]
+    },
+    "090": {
+      no:"090", machine:"Cutting Machine", name:"Part Off (Cutting)",
+      checks:[
+        { key:"Length",     spec:"As per order", method:"Measuring Tape",
+          type:"pf", passLabel:"Correct  ✓", failLabel:"Wrong Length  ✗" },
+        { key:"Wire Cut",   spec:"No wire cut",  method:"Visual",
+          type:"pf", passLabel:"None  ✓", failLabel:"Wire Cut  ✗" },
+        { key:"Appearance", spec:"No defects",   method:"Visual",
+          type:"pf", passLabel:"OK  ✓", failLabel:"Defect  ✗" }
+      ]
+    },
+    "091": {
+      no:"091", machine:"—", name:"Packing",
+      checks:[
+        { key:"Packing Condition", spec:"No damage",           method:"Visual",
+          type:"pf", passLabel:"OK  ✓", failLabel:"Damage Found  ✗" },
+        { key:"Quantity",          spec:"As per packing std.", method:"Visual",
+          type:"pf", passLabel:"Correct  ✓", failLabel:"Incorrect  ✗" }
+      ]
+    },
+    "092": {
+      no:"092", machine:"—", name:"Dispatch",
+      checks:[
+        { key:"Invoice / Qty.", spec:"Qty. match", method:"Visual",
+          type:"pf", passLabel:"Verified  ✓", failLabel:"Mismatch  ✗" }
+      ]
+    },
+    "100": {
+      no:"100", machine:"Manual / Fitting", name:"Fitting Assembly",
+      checks:[
+        { key:"Assembly", spec:"No gap & no damage", method:"Visual",
+          type:"pf", passLabel:"No Gap, No Damage  ✓", failLabel:"Gap / Damage Found  ✗" }
+      ]
+    },
+    "120": {
+      no:"120", machine:"Crimping", name:"Cap Punching",
+      checks:[
+        { key:"Crimp O.D.", spec:"Per standard", method:"Vernier Caliper",
+          type:"pf", passLabel:"Within Std.  ✓", failLabel:"Out of Std.  ✗" },
+        { key:"Pressure Testing",  spec:"15–30 Kgf", method:"Hydropneumatic M/c",
+          type:"bands", bands: p.crimping ? p.crimping.pressBands : [] },
+        { key:"Fitting Load Test", spec:"40–60 Kgf", method:"Tensile Machine",
+          type:"bands", bands: p.crimping ? p.crimping.loadBands : [] },
+        { key:"Air Leakage", spec:"< 5 Kgf", method:"Line Testing Machine",
+          type:"pf_sub", failLabel:"≥ 5 Kgf  ✗  FAIL",
+          passRanges:["0–1","1–2","2–3","3–4","4–5"] }
+      ]
+    },
+    "130": {
+      no:"130", machine:"—", name:"Final Inspection",
+      checks:[
+        { key:"Appearance", spec:"No wire broken, no fitting abnormalities", method:"Visual",
+          type:"pf", passLabel:"All OK  ✓", failLabel:"Defect Found  ✗" }
+      ]
+    }
+  };
+  return p.flow.map(f => lib[f]).filter(Boolean);
+}
+
+// ═══════════════════════════════════════════════
+// STATE
+// S.roundData[r].entries  – pkey → { result, label, time }
+// S.roundData[r].braiding – "BR-01" → { result, label }
+// ═══════════════════════════════════════════════
+const ROUND_LABELS = ["FOA / Setup", "Reading 1", "Reading 2", "Reading 3"];
+function emptyRound() { return { entries:{}, braiding:{} }; }
+
+let S = {
+  screen:"setup", product:"", date:today(), shift:"Morning", operator:"",
+  processIdx:0,
+  currentRound:0,
+  procOperators:{},
+  roundData:[ emptyRound(), emptyRound(), emptyRound(), emptyRound() ],
+  activeBraid:null,
+  supName:"", verified:{}, finalisedAt:""
+};
+
+// helpers so rest of code stays concise
+function curEntries()  { return S.roundData[S.currentRound].entries;  }
+function curBraiding() { return S.roundData[S.currentRound].braiding; }
+
+function today()   { return new Date().toISOString().slice(0,10); }
+function nowTime() { return new Date().toTimeString().slice(0,5); }
+function pkey(no, ch) { return `${no}_${ch}`; }
+
+function isCheckDone(chk, key) {
+  const e = curEntries()[key];
+  if (!e) return false;
+  if (chk.type === "pf_sub") return !!e.label;
+  if (chk.type === "manual") return !!e.label;
+  return true;
+}
+
+function braidStats() {
+  const vals = Object.values(curBraiding());
+  return {
+    passN: vals.filter(v => v.result === "PASS").length,
+    failN: vals.filter(v => v.result === "FAIL").length,
+    naN:   vals.filter(v => v.result === "N/A").length
+  };
+}
+
+function isProcDone(proc) {
+  if (proc.type === "braiding") {
+    const vals = Object.values(curBraiding());
+    return vals.some(v => v.result === "PASS" || v.result === "FAIL");
+  }
+  return proc.checks.every(c => isCheckDone(c, pkey(proc.no, c.key)));
+}
+
+function allEntryKeys() {
+  const keys = [];
+  buildProcesses(S.product).forEach(p => {
+    if (p.type === "braiding") keys.push(`${p.no}_braiding`);
+    else p.checks.forEach(c => keys.push(pkey(p.no, c.key)));
+  });
+  return keys;
+}
+
+// ═══════════════════════════════════════════════
+// RENDER ROUTER
+// ═══════════════════════════════════════════════
+function render() {
+  const fns = { setup:rSetup, process:rProcess, review:rReview, verify:rVerify, report:rReport };
+  document.getElementById("app").innerHTML = fns[S.screen]();
+}
+
+// ═══════════════════════════════════════════════
+// SCREEN 1 — SETUP
+// ═══════════════════════════════════════════════
+function rSetup() {
+  const pOpts = Object.keys(PRODUCTS).map(k =>
+    `<option value="${k}" ${S.product===k?"selected":""}>${PRODUCTS[k].label} — ${PRODUCTS[k].desc}</option>`).join("");
+  const oOpts = OPERATORS.map(o =>
+    `<option value="${o}" ${S.operator===o?"selected":""}>${o}</option>`).join("");
+  return `
+    <div class="header">
+      <h1>F-QA-12 · Inprocess Inspection</h1>
+      <p>Konneckt Hoses · Quality Control</p>
+    </div>
+    <div class="card">
+      <div style="font-size:17px;font-weight:800;margin-bottom:4px;">Start Inspection</div>
+      <div style="font-size:13px;color:#64748b;margin-bottom:16px;">Select details below to begin.</div>
+      <label>Product</label>
+      <select id="s-product"><option value="">— Select product —</option>${pOpts}</select>
+      <label>Date</label>
+      <input type="date" id="s-date" value="${S.date}">
+      <label>Shift</label>
+      <div class="shift-row">
+        ${["Morning","Afternoon","Night"].map(sh =>
+          `<div class="shift-btn ${S.shift===sh?"on":""}" onclick="S.shift='${sh}';render()">${sh}</div>`).join("")}
+      </div>
+      <label>Operator</label>
+      <select id="s-op"><option value="">— Select operator —</option>${oOpts}</select>
+      <button class="btn-primary" onclick="startInspection()">Begin Inspection →</button>
+    </div>
+    <div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:4px;">F-QA-12 Rev.01 · Eff. 01.04.19</div>`;
+}
+
+function startInspection() {
+  S.product  = document.getElementById("s-product").value;
+  S.date     = document.getElementById("s-date").value;
+  S.operator = document.getElementById("s-op").value;
+  if (!S.product)  { alert("Please select a product."); return; }
+  if (!S.operator) { alert("Please select an operator."); return; }
+  S.processIdx = 0; S.currentRound = 0; S.procOperators = {};
+  S.roundData = [ emptyRound(), emptyRound(), emptyRound(), emptyRound() ];
+  S.activeBraid = null; S.verified = {};
+  S.screen = "process"; render();
+}
+
+// ═══════════════════════════════════════════════
+// SCREEN 2 — PROCESS
+// ═══════════════════════════════════════════════
+function rRoundTabs() {
+  return ROUND_LABELS.map((lbl, i) => {
+    const done = S.roundData[i] && Object.keys(S.roundData[i].entries).length > 0;
+    const active = i === S.currentRound;
+    return `<div class="round-tab ${active?"rt-active":done?"rt-done":"rt-empty"}"
+      onclick="S.currentRound=${i};render()">${lbl}${done&&!active?' ✓':''}</div>`;
+  }).join("");
+}
+
+function rProcess() {
+  const procs = buildProcesses(S.product);
+  const proc  = procs[S.processIdx];
+  const total = procs.length;
+  const pct   = Math.round((S.processIdx / total) * 100);
+  const done  = isProcDone(proc);
+
+  const body = proc.type === "braiding" ? rBraiding(proc) : rChecks(proc);
+
+  return `
+    <div class="header">
+      <h1>Process ${proc.no} · ${proc.name}</h1>
+      <p>${PRODUCTS[S.product].label} · ${S.date} · ${S.shift}</p>
+    </div>
+    <div class="progress-wrap">
+      <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
+      <div class="step-label">Step ${S.processIdx+1} of ${total}</div>
+    </div>
+    <div class="card">
+      <span class="proc-badge">Process ${proc.no}</span>
+      <div class="proc-title">${proc.name}</div>
+      <div class="proc-machine">${proc.machine}</div>
+      <hr class="proc-divider">
+      <label style="margin-top:0;">Operator</label>
+      <select id="proc-op" onchange="S.procOperators['${proc.no}']=this.value;render()">
+        <option value="">— Select operator —</option>
+        ${OPERATORS.map(o => `<option value="${o}" ${(S.procOperators[proc.no]||S.operator)===o?"selected":""}>${o}</option>`).join("")}
+      </select>
+      <hr class="proc-divider">
+      ${body}
+    </div>
+    ${!done ? `<div class="alert">⚠  Complete all checks to continue.</div>` : ""}
+    <div class="nav-row no-print">
+      <button class="btn-back" onclick="navBack()">← Back</button>
+      <button class="btn-next" onclick="navNext()" ${done?"":"disabled"}>
+        ${S.processIdx===total-1?"Review All →":"Next →"}
+      </button>
+    </div>`;
+}
+
+// ── normal checks ──
+function rChecks(proc) {
+  return proc.checks.map(c => {
+    const key      = pkey(proc.no, c.key);
+    const e        = curEntries()[key];
+    const complete = isCheckDone(c, key);
+    const cls      = complete ? (e.result==="PASS" ? "done-pass" : "done-fail") : "";
+
+    let body = "";
+    if (c.type === "pf") {
+      body = `
+        <div class="pf-row">
+          <button class="pf-btn ${e?.result==="PASS"?"s-pass":""}"
+            onclick="recordPF('${key}','PASS','${esc(c.passLabel)}')">✓ ${c.passLabel}</button>
+          <button class="pf-btn ${e?.result==="FAIL"?"s-fail":""}"
+            onclick="recordPF('${key}','FAIL','${esc(c.failLabel)}')">✗ ${c.failLabel}</button>
+        </div>`;
+
+    } else if (c.type === "pf_sub") {
+      const passCls = e?.result==="PASS" ? (e.label ? "s-pass" : "s-pass-pending") : "";
+      body = `
+        <div class="pf-row">
+          <button class="pf-btn ${passCls}" onclick="selectPass('${key}')">✓ PASS</button>
+          <button class="pf-btn ${e?.result==="FAIL"?"s-fail":""}"
+            onclick="recordPF('${key}','FAIL','${esc(c.failLabel)}')">✗ ${c.failLabel}</button>
+        </div>`;
+      if (e?.result === "PASS") {
+        body += `
+        <div class="sub-label">Select the measured range:</div>
+        <div class="sub-row">
+          ${c.passRanges.map(r =>
+            `<button class="sub-btn ${e.label===r?"on":""}"
+               onclick="recordSub('${key}','${esc(r)}')">${r}</button>`).join("")}
+        </div>`;
+      }
+
+    } else if (c.type === "manual") {
+      const val = e?.label || "";
+      body = `
+        <div class="manual-row">
+          <input id="manual_${key}" class="manual-input" type="number" step="0.01"
+            placeholder="Enter value" value="${val}"
+            onkeydown="if(event.key==='Enter')recordManual('${key}')"/>
+          <span class="manual-unit">${c.unit||""}</span>
+          <button class="manual-confirm" onclick="recordManual('${key}')">✓ Save</button>
+        </div>`;
+
+    } else if (c.type === "bands") {
+      body = `
+        <div class="bands-label">Select the measured value:</div>
+        <div class="bands-row">
+          ${c.bands.map(b => {
+            const isPass = b.r === "PASS";
+            const sel    = e?.label === b.label;
+            const base   = isPass ? "b-pass-opt" : "b-fail-opt";
+            const on     = sel   ? (isPass ? "b-pass-on" : "b-fail-on") : base;
+            return `<button class="band-btn ${on}"
+                      onclick="recordBand('${key}','${b.r}','${esc(b.label)}')">${b.label}</button>`;
+          }).join("")}
+        </div>`;
+    }
+
+    return `
+      <div class="check-item ${cls}">
+        <div class="check-char">${c.key}</div>
+        <div class="check-spec">Specification: <strong>${c.spec}</strong></div>
+        <div class="check-method">Method: ${c.method}</div>
+        ${body}
+        ${complete ? `<div class="check-rec"><span>${e.label}</span><span style="color:#94a3b8">${e.time}</span></div>` : ""}
+      </div>`;
+  }).join("");
+}
+
+// ── wire braiding ──
+function rBraiding(proc) {
+  const p  = PRODUCTS[S.product].braiding;
+  const n  = p.machines;
+  const ms = Array.from({length:n}, (_,i) => `BR-${String(i+1).padStart(2,"0")}`);
+  const st = braidStats();
+
+  // machine grid
+  const cells = ms.map(m => {
+    const entry    = curBraiding()[m];
+    const isActive = S.activeBraid === m;
+    let cls = "", lbl = "Tap to set";
+    if (isActive) { cls = "b-active"; lbl = "Setting…"; }
+    else if (entry) {
+      if      (entry.result==="PASS") { cls="b-pass"; lbl = entry.label; }
+      else if (entry.result==="FAIL") { cls="b-fail"; lbl = "FAIL"; }
+      else                            { cls="b-na";   lbl = "N/A"; }
+    }
+    return `<div class="braid-cell ${cls}" onclick="selectBraidMachine('${m}')">
+      <div class="braid-machine">${m}</div>
+      <div class="braid-status">${lbl}</div>
+    </div>`;
+  }).join("");
+
+  // selection panel
+  let panel = "";
+  if (S.activeBraid) {
+    const bands    = p.odBands || [];
+    const existing = curBraiding()[S.activeBraid];
+    const bandBtns = bands.map(b => {
+      const on = existing?.label === b.label ? "b-pass-on" : "b-pass-opt";
+      return `<button class="braid-opt bo-pass ${on}"
+                onclick="recordBraid('${S.activeBraid}','PASS','${esc(b.label)}')">${b.label}</button>`;
+    }).join("");
+    const failOn = existing?.result==="FAIL" ? "b-fail-on" : "b-fail-opt";
+    const naOn   = existing?.result==="N/A"  ? "b-na-on"  : "b-na-opt";
+    panel = `
+      <div class="braid-panel">
+        <div class="braid-panel-title">📍 ${S.activeBraid} — Select O.D. result:</div>
+        <div class="braid-panel-opts">
+          ${bandBtns}
+          <button class="braid-opt bo-fail ${failOn}"
+            onclick="recordBraid('${S.activeBraid}','FAIL','FAIL')">✗ FAIL</button>
+          <button class="braid-opt bo-na ${naOn}"
+            onclick="recordBraid('${S.activeBraid}','N/A','N/A')">— N/A</button>
+        </div>
+        <div class="braid-panel-cancel" onclick="S.activeBraid=null;render()">✕ Cancel</div>
+      </div>`;
+  }
+
+  const tallyHtml = (st.passN + st.failN + st.naN) > 0 ? `
+    <div class="braid-tally">
+      <div class="tally-chip t-pass">✓ ${st.passN} PASS</div>
+      <div class="tally-chip t-fail">✗ ${st.failN} FAIL</div>
+      <div class="tally-chip t-na">— ${st.naN} N/A</div>
+    </div>` : "";
+
+  return `
+    <div class="braid-info">
+      <strong>O.D. Spec:</strong> ${p.od} &nbsp;·&nbsp; <strong>Pitch:</strong> ${p.pitch}<br>
+      <strong>Method:</strong> Vernier Caliper &nbsp;·&nbsp; <span style="color:#94a3b8">Tap a machine to set its result</span>
+    </div>
+    <div class="braid-grid">${cells}</div>
+    ${panel}
+    ${tallyHtml}`;
+}
+
+function selectBraidMachine(m) {
+  S.activeBraid = S.activeBraid === m ? null : m;
+  render();
+}
+
+function recordBraid(m, result, label) {
+  curBraiding()[m]  = { result, label };
+  S.activeBraid  = null;
+  render();
+}
+
+// ── entry recorders ──
+function recordPF(key, result, label) {
+  curEntries()[key] = { result, label, time: nowTime() }; render();
+}
+function selectPass(key) {
+  curEntries()[key] = { result:"PASS", label:"", time: nowTime() }; render();
+}
+function recordSub(key, range) {
+  curEntries()[key] = { result:"PASS", label:range, time: nowTime() }; render();
+}
+function recordBand(key, result, label) {
+  curEntries()[key] = { result, label, time: nowTime() }; render();
+}
+function recordManual(key) {
+  const val = document.getElementById("manual_" + key)?.value?.trim();
+  if (!val) return;
+  curEntries()[key] = { result:"PASS", label: val, time: nowTime() }; render();
+}
+
+function navBack() {
+  if (S.processIdx===0) S.screen="setup"; else S.processIdx--;
+  S.activeBraid = null; render();
+}
+function navNext() {
+  const procs = buildProcesses(S.product);
+  const proc  = procs[S.processIdx];
+  if (!S.procOperators[proc.no]) { alert("Please select an operator for this process."); return; }
+  S.activeBraid = null;
+  if (S.processIdx < procs.length-1) S.processIdx++;
+  else S.screen = "review";
+  render();
+}
+
+// ═══════════════════════════════════════════════
+// SCREEN 3 — REVIEW
+// ═══════════════════════════════════════════════
+function rReview() {
+  const procs  = buildProcesses(S.product);
+  // count fails across ALL rounds
+  let totalFails = 0;
+  S.roundData.forEach(rd => {
+    totalFails += Object.values(rd.entries).filter(e=>e.result==="FAIL").length;
+    totalFails += Object.values(rd.braiding).filter(v=>v.result==="FAIL").length;
+  });
+
+  const hdr = ROUND_LABELS.map(l=>`<th style="font-size:11px;padding:4px 6px;">${l}</th>`).join("");
+
+  const rows = procs.map(proc => {
+    if (proc.type === "braiding") {
+      const cells = S.roundData.map(rd => {
+        const vals = Object.values(rd.braiding);
+        if (!vals.length) return `<td style="color:#94a3b8;font-size:12px;">—</td>`;
+        const f = vals.filter(v=>v.result==="FAIL").length;
+        return `<td><span class="badge ${f===0?"b-ok":"b-ng"}" style="font-size:11px;">${f===0?"OK":"NG"}</span></td>`;
+      }).join("");
+      return `<tr><td colspan="2" style="font-size:12px;color:#1e3a5f;font-weight:700;">030 Wire Braiding</td>${cells}</tr>`;
+    }
+    return proc.checks.map((c,ci) => {
+      const cells = S.roundData.map(rd => {
+        const e = rd.entries[pkey(proc.no, c.key)];
+        if (!e) return `<td style="color:#94a3b8;font-size:12px;">—</td>`;
+        return `<td><span class="badge ${e.result==="PASS"?"b-ok":"b-ng"}" style="font-size:11px;">${e.label||e.result}</span></td>`;
+      }).join("");
+      return `<tr>
+        <td style="font-size:11px;color:#64748b;">${ci===0?"P"+proc.no:""}</td>
+        <td style="font-size:12px;">${c.key}</td>
+        ${cells}
+      </tr>`;
+    }).join("");
+  }).join("");
+
+  return `
+    <div class="header"><h1>Review — All Readings</h1>
+      <p>${PRODUCTS[S.product].label} · ${S.operator} · ${S.date}</p></div>
+    ${totalFails>0
+      ? `<div class="alert">⚠  ${totalFails} check(s) FAILED across all readings.</div>`
+      : `<div class="alert green">✅ All readings complete. Ready for verification.</div>`}
+    <div class="round-tabs">${rRoundTabs()}</div>
+    <div class="card" style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead><tr style="background:#f1f5f9;">
+          <th style="font-size:11px;padding:4px 6px;">Proc</th>
+          <th style="font-size:11px;padding:4px 6px;">Check</th>
+          ${hdr}
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div class="nav-row no-print">
+      <button class="btn-back" onclick="S.processIdx=buildProcesses(S.product).length-1;S.screen='process';render()">← Edit</button>
+      <button class="btn-next" onclick="S.screen='verify';render()">Submit for Verification →</button>
+    </div>`;
+}
+
+// ═══════════════════════════════════════════════
+// SCREEN 4 — SUPERVISOR VERIFICATION
+// ═══════════════════════════════════════════════
+function rVerify() {
+  const procs   = buildProcesses(S.product);
+  const st      = braidStats();
+  const supOpts = SUPERVISORS.map(s =>
+    `<option value="${s}" ${S.supName===s?"selected":""}>${s}</option>`).join("");
+  const allKeys = allEntryKeys();
+  const verN    = allKeys.filter(k => S.verified[k]).length;
+
+  const rows = procs.map(proc => {
+    if (proc.type === "braiding") {
+      const k = `${proc.no}_braiding`;
+      const isV = S.verified[k];
+      return `<div class="ver-row">
+        <div class="ver-info">
+          <div class="sum-proc">Process ${proc.no}</div>
+          <div class="sum-char">Wire Braiding</div>
+          <div class="sum-obs">${st.passN} PASS · ${st.failN} FAIL · ${st.naN} N/A</div>
+          <span class="badge ${st.failN===0?"b-ok":"b-ng"}" style="margin-top:4px;display:inline-block;">${st.failN===0?"OK":"NG"}</span>
+        </div>
+        <button class="ver-btn ${isV?"ok":""}" onclick="toggleVerify('${k}')">${isV?"✓ Verified":"Verify"}</button>
+      </div>`;
+    }
+    return proc.checks.map(c => {
+      const key = pkey(proc.no, c.key);
+      const e   = S.roundData[0].entries[key] || S.roundData[1].entries[key] || S.roundData[2].entries[key] || S.roundData[3].entries[key];
+      const isV = S.verified[key];
+      return `<div class="ver-row">
+        <div class="ver-info">
+          <div class="sum-proc">Process ${proc.no} · ${proc.machine}</div>
+          <div class="sum-char">${c.key}</div>
+          <div class="sum-obs">Spec: ${c.spec}</div>
+          <span class="badge ${e?.result==="PASS"?"b-ok":"b-ng"}" style="margin-top:4px;display:inline-block;">
+            ${e?.result==="PASS"?"OK":"NG"} · ${e?.label||"—"}
+          </span>
+        </div>
+        <button class="ver-btn ${isV?"ok":""}" onclick="toggleVerify('${key}')">${isV?"✓ Verified":"Verify"}</button>
+      </div>`;
+    }).join("");
+  }).join("");
+
+  return `
+    <div class="header sup"><h1>🔍 Supervisor Verification</h1>
+      <p>Review entries and sign off</p></div>
+    <div class="card">
+      <label>Verified By</label>
+      <select onchange="S.supName=this.value">
+        <option value="">— Select supervisor —</option>${supOpts}
+      </select>
+    </div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <div style="font-weight:700;font-size:15px;">${verN} / ${allKeys.length} verified</div>
+        <button class="verify-all-btn" onclick="verifyAll()">Verify All ✓</button>
+      </div>
+      ${rows}
+    </div>
+    <div class="nav-row no-print">
+      <button class="btn-back" onclick="S.screen='review';render()">← Back</button>
+      <button class="btn-next purple" onclick="finalise()" ${S.supName?"":"disabled"}>Finalise Report →</button>
+    </div>`;
+}
+
+function toggleVerify(k) { S.verified[k] = !S.verified[k]; render(); }
+function verifyAll()     { allEntryKeys().forEach(k => S.verified[k] = true); render(); }
+function finalise() {
+  if (!S.supName) { alert("Please select a supervisor."); return; }
+  S.finalisedAt = new Date().toLocaleString("en-IN");
+  S.screen = "report"; render();
+}
+
+// ═══════════════════════════════════════════════
+// SCREEN 5 — FINAL REPORT
+// ═══════════════════════════════════════════════
+function rReport() {
+  const procs  = buildProcesses(S.product);
+  let totalF = 0;
+  S.roundData.forEach(rd => {
+    totalF += Object.values(rd.entries).filter(e=>e.result==="FAIL").length;
+    totalF += Object.values(rd.braiding).filter(v=>v.result==="FAIL").length;
+  });
+
+  const obsHdr = ROUND_LABELS.map(l=>`<th>${l}</th>`).join("");
+  const jdgHdr = ROUND_LABELS.map(l=>`<th>OK/NG</th>`).join("");
+
+  const rows = procs.map((proc) => {
+    if (proc.type === "braiding") {
+      const p   = PRODUCTS[S.product].braiding;
+      const n   = p.machines;
+      const ms  = Array.from({length:n}, (_,i) => `BR-${String(i+1).padStart(2,"0")}`);
+      const obsCells = S.roundData.map(rd => {
+        const detail = ms.map(m => rd.braiding[m]?.label).filter(Boolean).join("  ·  ");
+        return `<td style="font-size:9px;">${detail||"—"}</td>`;
+      }).join("");
+      const jdgCells = S.roundData.map(rd => {
+        const f = Object.values(rd.braiding).filter(v=>v.result==="FAIL").length;
+        return `<td><span class="badge ${f===0?"b-ok":"b-ng"}">${f===0?"OK":"NG"}</span></td>`;
+      }).join("");
+      return `<tr class="first">
+        <td style="font-weight:700;color:#1e3a5f;">070</td>
+        <td>Wire Braiding</td><td>Wire Braiding</td>
+        <td>O.D.</td><td>${p.od}</td><td>Vernier Caliper</td>
+        ${obsCells}${jdgCells}
+        <td>${S.procOperators[proc.no]||S.operator}</td><td>${S.supName}</td>
+      </tr>`;
+    }
+    return proc.checks.map((c, ci) => {
+      const obsCells = S.roundData.map(rd => {
+        const e = rd.entries[pkey(proc.no, c.key)];
+        return `<td>${e?.label||"—"}</td>`;
+      }).join("");
+      const jdgCells = S.roundData.map(rd => {
+        const e = rd.entries[pkey(proc.no, c.key)];
+        return `<td>${e?`<span class="badge ${e.result==="PASS"?"b-ok":"b-ng"}">${e.result==="PASS"?"OK":"NG"}</span>`:"—"}</td>`;
+      }).join("");
+      return `<tr ${ci===0?"class='first'":""}>
+        <td ${ci===0?`style="font-weight:700;color:#1e3a5f;"`:""}>${ci===0?proc.no:""}</td>
+        <td>${ci===0?proc.machine:""}</td>
+        <td>${ci===0?proc.name:""}</td>
+        <td>${c.key}</td><td>${c.spec}</td><td>${c.method}</td>
+        ${obsCells}${jdgCells}
+        <td>${ci===0?(S.procOperators[proc.no]||S.operator):""}</td>
+        <td>${ci===0?S.supName:""}</td>
+      </tr>`;
+    }).join("");
+  }).join("");
+
+  return `
+    <div class="alert ${totalF===0?"green":""}" style="margin-bottom:14px;">
+      ${totalF===0
+        ? `✅ All checks PASSED · Verified by <strong>${S.supName}</strong> · ${S.finalisedAt}`
+        : `⚠  ${totalF} check(s) FAILED · Verified by ${S.supName} · ${S.finalisedAt}`}
+    </div>
+    <div class="card">
+      <div style="font-size:16px;font-weight:800;color:#1e3a5f;">INPROCESS INSPECTION REPORT</div>
+      <div style="font-size:11px;color:#94a3b8;margin-bottom:14px;">Fmt. No.: F-QA-12 · Rev.01 · Eff. Date: 01.04.19</div>
+      <div class="report-meta">
+        <div class="meta-item"><div class="meta-lbl">Product</div><div class="meta-val">${PRODUCTS[S.product].label}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Date</div><div class="meta-val">${S.date}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Operator</div><div class="meta-val">${S.operator}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Shift</div><div class="meta-val">${S.shift}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Verified By</div><div class="meta-val">${S.supName}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Finalised</div><div class="meta-val" style="font-size:12px;">${S.finalisedAt}</div></div>
+      </div>
+      <div style="overflow-x:auto;">
+        <table class="report-table">
+          <thead><tr>
+            <th rowspan="2">Proc.</th><th rowspan="2">Machine</th><th rowspan="2">Process</th>
+            <th rowspan="2">Characteristic</th><th rowspan="2">Spec.</th><th rowspan="2">Method</th>
+            <th colspan="4" style="text-align:center;">Observation</th>
+            <th colspan="4" style="text-align:center;">OK / NG</th>
+            <th rowspan="2">Insp. By</th><th rowspan="2">Verified By</th>
+          </tr><tr>
+            ${ROUND_LABELS.map(l=>`<th style="font-size:10px;font-weight:600;">${l}</th>`).join("")}
+            ${ROUND_LABELS.map(l=>`<th style="font-size:10px;font-weight:600;">${l}</th>`).join("")}
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+    <div class="nav-row no-print">
+      <button class="btn-outline" onclick="window.print()">🖨  Print / Save PDF</button>
+      <button class="btn-outline" onclick="exportToLog()" style="background:#f0fdf4;color:#15803d;border-color:#16a34a;">
+        📥  Export to Inspection Log
+      </button>
+      <a class="btn-outline" href="F-QA-12_Inspection_Log.xlsx" download
+         style="display:block;text-align:center;text-decoration:none;background:#eff6ff;color:#1d4ed8;border-color:#2563eb;">
+        📋  Open Master Log (Excel)
+      </a>
+      <button class="btn-primary" style="margin-top:0;" onclick="newInspection()">+ New Inspection</button>
+    </div>`;
+}
+
+function newInspection() {
+  S = { screen:"setup", product:"", date:today(), shift:"Morning", operator:"",
+        processIdx:0, currentRound:0, procOperators:{},
+        roundData:[ emptyRound(), emptyRound(), emptyRound(), emptyRound() ],
+        activeBraid:null, supName:"", verified:{}, finalisedAt:"" };
+  render();
+}
+
+function esc(s) { return (s||"").replace(/\\/g,"\\\\").replace(/'/g,"\\'"); }
+
+// ═══════════════════════════════════════════════
+// EXPORT TO INSPECTION LOG
+// ═══════════════════════════════════════════════
+function exportToLog() {
+  const prod   = PRODUCTS[S.product];
+  const braid  = prod.braiding;
+  const n      = braid.machines;
+  const ms     = Array.from({length:n}, (_,i) => `BR-${String(i+1).padStart(2,"0")}`);
+
+  // Build 4 rows — one per round
+  const sheetRows = ROUND_LABELS.map((lbl, ri) => {
+    const rd  = S.roundData[ri];
+    const ent = rd.entries;
+    const brg = rd.braiding;
+
+    // P040
+    const odKey  = pkey("040","O.D.");
+    const idKey  = pkey("040","I.D.");
+    const appKey = pkey("040","Appearance");
+    const lenKey = pkey("090","Length");
+    const wcKey  = pkey("090","Wire Cut");
+    const app90  = pkey("090","Appearance");
+
+    const row = {
+      "Date":          S.date,
+      "Product":       prod.label,
+      "Shift / Sample": lbl,
+      "Operator":      S.procOperators["040"] || S.operator,
+      "O.D. Spec":     prod.extruder.od,
+      "O.D. Measured": ent[odKey]?.label  || "",
+      "I.D. Spec":     prod.extruder.id,
+      "I.D. Measured": ent[idKey]?.label  || "",
+      "Appearance":    ent[appKey]?.label || "",
+    };
+    // BR-01..BR-18
+    ms.forEach((m,i) => {
+      row[`BR-0${i+1 < 10 ? "0"+(i+1) : (i+1)} O.D.`] = brg[m]?.label || "";
+    });
+    row["Length"]     = ent[lenKey]?.label || "";
+    row["Wire Cut"]   = ent[wcKey]?.label  || "";
+    row["Appearance (P090)"] = ent[app90]?.label || "";
+    return row;
+  });
+
+  const ws   = XLSX.utils.json_to_sheet(sheetRows);
+  const wb   = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Export");
+  const fname = `F-QA-12_${S.product}_${S.date}.xlsx`;
+  XLSX.writeFile(wb, fname);
+}
+
+render();
+</script>
+</body>
+</html>
