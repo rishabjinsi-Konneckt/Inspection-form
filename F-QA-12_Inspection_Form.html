@@ -1522,7 +1522,9 @@ let S = {
   procOperators:{},
   roundData:ROUND_LABELS.map(() => emptyRound()),
   activeBraid:null,
-  supName:"", verified:{}, finalisedAt:""
+  supName:"", verified:{}, finalisedAt:"",
+  submitStatus:"", submitError:"",
+  logFilters:{date:"",product:"",search:""}, logResults:null, logLoading:false, logError:""
 };
 
 // helpers so rest of code stays concise
@@ -1573,7 +1575,7 @@ function allEntryKeys() {
 // RENDER ROUTER
 // ═══════════════════════════════════════════════
 function render() {
-  const fns = { setup:rSetup, process:rProcess, review:rReview, verify:rVerify, report:rReport };
+  const fns = { setup:rSetup, process:rProcess, review:rReview, verify:rVerify, report:rReport, log:rLog };
   document.getElementById("app").innerHTML = fns[S.screen]();
   saveState();
 }
@@ -1606,6 +1608,7 @@ function rSetup() {
       <label>Operator</label>
       <select id="s-op"><option value="">— Select operator —</option>${oOpts}</select>
       <button class="btn-primary" onclick="startInspection()">Begin Inspection →</button>
+      <button class="btn-outline" onclick="S.screen='log';render()">📊 View Inspection Log</button>
     </div>
     <div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:4px;">F-QA-12 Rev.01 · Eff. 01.04.19</div>`;
 }
@@ -2011,6 +2014,94 @@ function finalise() {
 }
 
 // ═══════════════════════════════════════════════
+// MASTER SHEET SCHEMA — shared by xlsx export & Google Sheets submission
+// ═══════════════════════════════════════════════
+const SHEET_HEADERS = [
+  "Date","Product","Shift / Sample","Operator",
+  "O.D. Spec","O.D. Measured","I.D. Spec","I.D. Measured","Appearance",
+  ...Array.from({length:18}, (_,i) => `BR-${String(i+1).padStart(2,"0")} O.D.`),
+  "Length","Wire Cut","Appearance (P090)",
+  "O.D. Photo","I.D. Photo","Pressure Photo (P050)","Length Photo (P090)",
+  "Crimp O.D. Photo (P120)","Pressure Testing Photo (P120)","Fitting Load Test Photo (P120)","Air Leakage Photo (P120)",
+  "Braiding Photos","Supervisor","Finalised At"
+];
+
+function buildSheetRows() {
+  const p = PRODUCTS[S.product];
+  if (!p) return [];
+  return S.roundData.map((rd, i) => {
+    if (!rd || !Object.keys(rd.entries).length) return null;
+    const g = (no, key) => rd.entries[pkey(no, key)] || {};
+    const brCols = Array.from({length:18}, (_, bi) => {
+      const m = `BR-${String(bi+1).padStart(2,"0")}`;
+      return (rd.braiding[m] && rd.braiding[m].label) || "";
+    });
+    const braidPhotos = Object.keys(rd.braiding)
+      .filter(m => rd.braiding[m] && rd.braiding[m].photo)
+      .map(m => `${m}: ${rd.braiding[m].photo}`)
+      .join("; ");
+    return [
+      S.date,
+      p.label,
+      ROUND_LABELS[i],
+      S.procOperators["040"] || S.operator,
+      p.extruder.od,
+      g("040","O.D.").label || "",
+      p.extruder.id,
+      g("040","I.D.").label || "",
+      g("040","Appearance").label || "",
+      ...brCols,
+      g("090","Length").label || "",
+      g("090","Wire Cut").label || "",
+      g("090","Appearance").label || "",
+      g("040","O.D.").photo || "",
+      g("040","I.D.").photo || "",
+      g("050","Pressure").photo || "",
+      g("090","Length").photo || "",
+      g("120","Crimp O.D.").photo || "",
+      g("120","Pressure Testing").photo || "",
+      g("120","Fitting Load Test").photo || "",
+      g("120","Air Leakage").photo || "",
+      braidPhotos,
+      S.supName,
+      S.finalisedAt
+    ];
+  }).filter(Boolean);
+}
+
+async function submitToSheet() {
+  S.submitStatus = "loading"; S.submitError = ""; render();
+  try {
+    const rows = buildSheetRows();
+    if (!rows.length) throw new Error("No rounds have data to submit.");
+    const res = await fetch("/api/submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rows })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const msg = (data && data.error && (data.error.error?.message || data.error)) || "Submit failed";
+      throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+    }
+    S.submitStatus = "done";
+  } catch (err) {
+    S.submitStatus = "error";
+    S.submitError = err.message;
+  }
+  render();
+}
+
+function exportToLog() {
+  const rows = buildSheetRows();
+  if (!rows.length) { alert("No rounds have data to export."); return; }
+  const ws = XLSX.utils.aoa_to_sheet([SHEET_HEADERS, ...rows]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Inspection");
+  XLSX.writeFile(wb, `F-QA-12_${S.product}_${S.date}.xlsx`);
+}
+
+// ═══════════════════════════════════════════════
 // SCREEN 5 — FINAL REPORT
 // ═══════════════════════════════════════════════
 function rReport() {
@@ -2066,12 +2157,21 @@ function rReport() {
     }).join("");
   }).join("");
 
+  const submitHtml = S.submitStatus === "loading"
+    ? `<div class="alert">⏳ Submitting to Google Sheet…</div>`
+    : S.submitStatus === "done"
+    ? `<div class="alert green">✅ Submitted to Google Sheet.</div>`
+    : S.submitStatus === "error"
+    ? `<div class="alert">⚠ Submit failed: ${(S.submitError||"").replace(/</g,"&lt;")} · <span style="text-decoration:underline;cursor:pointer;" onclick="submitToSheet()">Retry</span></div>`
+    : "";
+
   return `
     <div class="alert ${totalF===0?"green":""}" style="margin-bottom:14px;">
       ${totalF===0
         ? `✅ All checks PASSED · Verified by <strong>${S.supName}</strong> · ${S.finalisedAt}`
         : `⚠  ${totalF} check(s) FAILED · Verified by ${S.supName} · ${S.finalisedAt}`}
     </div>
+    ${submitHtml}
     <div class="card">
       <div style="font-size:16px;font-weight:800;color:#1e3a5f;">INPROCESS INSPECTION REPORT</div>
       <div style="font-size:11px;color:#94a3b8;margin-bottom:14px;">Fmt. No.: F-QA-12 · Rev.01 · Eff. Date: 01.04.19</div>
@@ -2100,6 +2200,9 @@ function rReport() {
       </div>
     </div>
     <div class="nav-row no-print">
+      <button class="btn-outline" onclick="submitToSheet()" style="background:#eff6ff;color:#1d4ed8;border-color:#2563eb;" ${S.submitStatus==="loading"?"disabled":""}>
+        📤  ${S.submitStatus==="done"?"Re-submit to Google Sheet":"Submit to Google Sheet"}
+      </button>
       <button class="btn-outline" onclick="window.print()">🖨  Print / Save PDF</button>
       <button class="btn-outline" onclick="exportToLog()" style="background:#f0fdf4;color:#15803d;border-color:#16a34a;">
         📥  Export to Inspection Log
@@ -2117,7 +2220,115 @@ function newInspection() {
   S = { screen:"setup", product:"", date:today(), shift:ROUND_LABELS[0], operator:"",
         processIdx:0, currentRound:0, procOperators:{},
         roundData:ROUND_LABELS.map(() => emptyRound()),
-        activeBraid:null, supName:"", verified:{}, finalisedAt:"" };
+        activeBraid:null, supName:"", verified:{}, finalisedAt:"",
+        submitStatus:"", submitError:"",
+        logFilters:{date:"",product:"",search:""}, logResults:null, logLoading:false, logError:"" };
+  render();
+}
+
+// ═══════════════════════════════════════════════
+// SCREEN 6 — INSPECTION LOG VIEWER (reads from Google Sheet)
+// ═══════════════════════════════════════════════
+function rLog() {
+  const pOpts = Object.keys(PRODUCTS).map(k =>
+    `<option value="${k}" ${S.logFilters.product===k?"selected":""}>${PRODUCTS[k].label}</option>`).join("");
+
+  let bodyHtml;
+  if (S.logLoading) {
+    bodyHtml = `<div style="text-align:center;padding:24px;color:#64748b;font-size:13px;">Loading…</div>`;
+  } else if (S.logError) {
+    bodyHtml = `<div class="alert">⚠ ${esc(S.logError)}</div>`;
+  } else if (!S.logResults) {
+    bodyHtml = `<div style="text-align:center;padding:24px;color:#94a3b8;font-size:13px;">Set filters above and tap Search.</div>`;
+  } else if (!S.logResults.rows.length) {
+    bodyHtml = `<div style="text-align:center;padding:24px;color:#94a3b8;font-size:13px;">No records found.</div>`;
+  } else {
+    bodyHtml = `
+      <div style="font-size:12px;color:#64748b;margin-bottom:8px;">Showing ${S.logResults.rows.length} of ${S.logResults.total} record(s)</div>
+      <div style="overflow-x:auto;">
+        <table class="report-table">
+          <thead><tr>
+            <th>Date</th><th>Product</th><th>Shift/Sample</th><th>Operator</th>
+            <th>O.D.</th><th>I.D.</th><th>Length</th><th>Supervisor</th><th>Photos</th>
+          </tr></thead>
+          <tbody>
+            ${S.logResults.rows.map(r => `<tr>
+              <td>${esc(r["Date"])}</td>
+              <td>${esc(r["Product"])}</td>
+              <td>${esc(r["Shift / Sample"])}</td>
+              <td>${esc(r["Operator"])}</td>
+              <td>${esc(r["O.D. Measured"])}</td>
+              <td>${esc(r["I.D. Measured"])}</td>
+              <td>${esc(r["Length"])}</td>
+              <td>${esc(r["Supervisor"])}</td>
+              <td>${photoLinksForRow(r)}</td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>`;
+  }
+
+  return `
+    <div class="header">
+      <h1>📊 Inspection Log</h1>
+      <p>Search submitted rounds from the master Google Sheet</p>
+    </div>
+    <div class="card">
+      <label>Date</label>
+      <input type="date" id="log-date" value="${S.logFilters.date||""}">
+      <label>Product</label>
+      <select id="log-product"><option value="">— All products —</option>${pOpts}</select>
+      <label>Search (any field)</label>
+      <input type="text" id="log-search" placeholder="e.g. BR-05, operator name…" value="${esc(S.logFilters.search||"")}"
+        style="width:100%;padding:13px 14px;border:2px solid #e2e8f0;border-radius:10px;font-size:15px;outline:none;">
+      <button class="btn-primary" onclick="runLogSearch()">🔍 Search</button>
+    </div>
+    <div class="card">${bodyHtml}</div>
+    <div class="nav-row no-print">
+      <button class="btn-back" onclick="S.screen='setup';render()">← Back</button>
+    </div>`;
+}
+
+function photoLinksForRow(r) {
+  const cols = ["O.D. Photo","I.D. Photo","Pressure Photo (P050)","Length Photo (P090)",
+    "Crimp O.D. Photo (P120)","Pressure Testing Photo (P120)","Fitting Load Test Photo (P120)","Air Leakage Photo (P120)"];
+  const links = [];
+  cols.forEach((c, i) => { if (r[c]) links.push(`<a href="${r[c]}" target="_blank" rel="noopener">📷${links.length+1}</a>`); });
+  if (r["Braiding Photos"]) {
+    r["Braiding Photos"].split(";").map(s=>s.trim()).filter(Boolean).forEach((pair) => {
+      const url = pair.split(":").slice(1).join(":").trim();
+      if (url) links.push(`<a href="${url}" target="_blank" rel="noopener">🧵</a>`);
+    });
+  }
+  return links.length ? links.join(" ") : "—";
+}
+
+async function runLogSearch() {
+  const dateEl = document.getElementById("log-date");
+  const productEl = document.getElementById("log-product");
+  const searchEl = document.getElementById("log-search");
+  S.logFilters = {
+    date: dateEl ? dateEl.value : S.logFilters.date,
+    product: productEl ? productEl.value : S.logFilters.product,
+    search: searchEl ? searchEl.value.trim() : S.logFilters.search
+  };
+  S.logLoading = true; S.logError = ""; render();
+  try {
+    const params = new URLSearchParams();
+    if (S.logFilters.date) params.set("date", S.logFilters.date);
+    if (S.logFilters.product && PRODUCTS[S.logFilters.product]) params.set("product", PRODUCTS[S.logFilters.product].label);
+    if (S.logFilters.search) params.set("search", S.logFilters.search);
+    const res = await fetch(`/api/log?${params.toString()}`);
+    const data = await res.json();
+    if (!res.ok) {
+      const msg = (data && data.error && (data.error.error?.message || data.error)) || "Search failed";
+      throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+    }
+    S.logResults = data;
+  } catch (err) {
+    S.logError = err.message;
+  }
+  S.logLoading = false;
   render();
 }
 
