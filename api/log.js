@@ -19,7 +19,7 @@ module.exports = async function handler(req, res) {
     const { date, product, search } = req.query || {};
 
     const token = await getAccessToken();
-    const range = 'A1:AO5000'; // unqualified -> first sheet, generous row cap
+    const range = 'A1:BZ5000'; // unqualified -> first sheet, generous row + column headroom
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(
       range
     )}`;
