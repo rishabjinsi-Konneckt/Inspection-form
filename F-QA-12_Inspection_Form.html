@@ -26,8 +26,8 @@ label:first-of-type { margin-top: 4px; }
 select, input[type="date"] { width: 100%; padding: 13px 14px; border: 2px solid #e2e8f0; border-radius: 10px; font-size: 15px; color: #1a202c; background: white; outline: none; }
 select:focus, input[type="date"]:focus { border-color: #2563eb; }
 
-.shift-row { display: flex; gap: 8px; margin-top: 5px; }
-.shift-btn { flex: 1; padding: 11px 4px; border: 2px solid #e2e8f0; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; background: white; color: #64748b; text-align: center; }
+.shift-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 5px; }
+.shift-btn { flex: 1 1 30%; min-width: 90px; padding: 11px 4px; border: 2px solid #e2e8f0; border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer; background: white; color: #64748b; text-align: center; }
 .shift-btn.on { background: #eff6ff; border-color: #2563eb; color: #2563eb; }
 
 .proc-badge   { background: #1e3a5f; color: white; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; display: inline-block; margin-bottom: 8px; }
@@ -1354,7 +1354,7 @@ const ROUND_LABELS = ["Approval Sample", "09:00", "12:00", "14:00", "17:00", "19
 function emptyRound() { return { entries:{}, braiding:{} }; }
 
 let S = {
-  screen:"setup", product:"", date:today(), shift:"Morning", operator:"",
+  screen:"setup", product:"", date:today(), shift:ROUND_LABELS[0], operator:"",
   processIdx:0,
   currentRound:0,
   procOperators:{},
@@ -1435,7 +1435,7 @@ function rSetup() {
       <input type="date" id="s-date" value="${S.date}">
       <label>Shift</label>
       <div class="shift-row">
-        ${["Morning","Afternoon","Night"].map(sh =>
+        ${ROUND_LABELS.map(sh =>
           `<div class="shift-btn ${S.shift===sh?"on":""}" onclick="S.shift='${sh}';render()">${sh}</div>`).join("")}
       </div>
       <label>Operator</label>
@@ -1930,7 +1930,7 @@ function rReport() {
 }
 
 function newInspection() {
-  S = { screen:"setup", product:"", date:today(), shift:"Morning", operator:"",
+  S = { screen:"setup", product:"", date:today(), shift:ROUND_LABELS[0], operator:"",
         processIdx:0, currentRound:0, procOperators:{},
         roundData:ROUND_LABELS.map(() => emptyRound()),
         activeBraid:null, supName:"", verified:{}, finalisedAt:"" };
