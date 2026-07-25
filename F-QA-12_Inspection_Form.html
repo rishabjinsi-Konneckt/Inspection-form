@@ -69,6 +69,13 @@ select:focus, input[type="date"]:focus { border-color: #2563eb; }
 .rt-done    { background: #dcfce7; border-color: #16a34a; color: #15803d; }
 .rt-empty   { background: #f8fafc; color: #94a3b8; }
 .round-banner { text-align: center; font-size: 13px; color: #64748b; padding: 2px 0 8px; }
+.photo-row { margin-top: 10px; cursor: pointer; }
+.photo-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; padding: 7px 12px; border-radius: 8px; border: 1.5px dashed #cbd5e1; color: #64748b; background: #f8fafc; }
+.photo-badge.photo-done { border-style: solid; border-color: #16a34a; color: #15803d; background: #f0fdf4; }
+.photo-badge.photo-uploading { border-style: solid; border-color: #2563eb; color: #2563eb; background: #eff6ff; }
+.photo-badge.photo-error { border-style: solid; border-color: #ef4444; color: #dc2626; background: #fef2f2; }
+.braid-photo-dot { position: absolute; top: 3px; right: 5px; font-size: 10px; }
+.braid-cell { position: relative; }
 .manual-input { flex: 1; padding: 12px 14px; border: 2px solid #e2e8f0; border-radius: 10px; font-size: 18px; font-weight: 700; color: #1e3a5f; text-align: center; outline: none; }
 .manual-input:focus { border-color: #2563eb; }
 .manual-confirm { padding: 12px 18px; background: #2563eb; color: white; border: none; border-radius: 10px; font-size: 15px; font-weight: 700; cursor: pointer; }
@@ -1248,9 +1255,9 @@ function buildProcesses(pk) {
       no:"040", machine:"Rubber Extruder (RE-01)", name:"Material Extruding",
       checks:[
         { key:"O.D.", spec:p.extruder.od, method:"Vernier Caliper",
-          type:"bands", bands:p.extruder.odBands },
+          type:"bands", bands:p.extruder.odBands, photo:true },
         { key:"I.D.", spec:p.extruder.id, method:"Vernier Caliper",
-          type:"bands", bands:p.extruder.idBands },
+          type:"bands", bands:p.extruder.idBands, photo:true },
         { key:"Appearance", spec:"Smooth", method:"Visual",
           type:"pf", passLabel:"Smooth  ✓", failLabel:"Not Smooth  ✗" }
       ]
@@ -1259,7 +1266,7 @@ function buildProcesses(pk) {
       no:"050", machine:"Vulcanizer", name:"Vulcanization",
       checks:[
         { key:"Pressure", spec:"55 Kgf (set point)", method:"Pressure Gauge",
-          type:"pf", passLabel:"55 Kgf  ✓  OK", failLabel:"Pressure Off  ✗" }
+          type:"pf", passLabel:"55 Kgf  ✓  OK", failLabel:"Pressure Off  ✗", photo:true }
       ]
     },
     "060": {
@@ -1290,7 +1297,7 @@ function buildProcesses(pk) {
       no:"090", machine:"Cutting Machine", name:"Part Off (Cutting)",
       checks:[
         { key:"Length",     spec:p.cutting.len, method:"Measuring Tape",
-          type:"bands", bands:p.cutting.lenBands },
+          type:"bands", bands:p.cutting.lenBands, photo:true },
         { key:"Wire Cut",   spec:"No wire cut",  method:"Visual",
           type:"pf", passLabel:"None (OK)  ✓", failLabel:"Wire Cut (FAIL)  ✗" },
         { key:"Appearance", spec:"No defects",   method:"Visual",
@@ -1324,14 +1331,14 @@ function buildProcesses(pk) {
       no:"120", machine:"Crimping", name:"Cap Punching",
       checks:[
         { key:"Crimp O.D.", spec:"Per standard", method:"Vernier Caliper",
-          type:"pf", passLabel:"Within Std.  ✓", failLabel:"Out of Std.  ✗" },
+          type:"pf", passLabel:"Within Std.  ✓", failLabel:"Out of Std.  ✗", photo:true },
         { key:"Pressure Testing",  spec:"15–30 Kgf", method:"Hydropneumatic M/c",
-          type:"bands", bands: p.crimping ? p.crimping.pressBands : [] },
+          type:"bands", bands: p.crimping ? p.crimping.pressBands : [], photo:true },
         { key:"Fitting Load Test", spec:"40–60 Kgf", method:"Tensile Machine",
-          type:"bands", bands: p.crimping ? p.crimping.loadBands : [] },
+          type:"bands", bands: p.crimping ? p.crimping.loadBands : [], photo:true },
         { key:"Air Leakage", spec:"< 5 Kgf", method:"Line Testing Machine",
           type:"pf_sub", failLabel:"≥ 5 Kgf  ✗  FAIL",
-          passRanges:["0–1","1–2","2–3","3–4","4–5"] }
+          passRanges:["0–1","1–2","2–3","3–4","4–5"], photo:true }
       ]
     },
     "130": {
@@ -1357,6 +1364,137 @@ function emptyRound() { return { entries:{}, braiding:{} }; }
 // LOCAL PERSISTENCE
 // ═══════════════════════════════════════════════
 const STORAGE_KEY = "fqa12_inspection_state_v1";
+
+// ═══════════════════════════════════════════════
+// PHOTO CAPTURE — Cloudinary (unsigned upload)
+// ═══════════════════════════════════════════════
+const CLOUDINARY_CLOUD_NAME   = "aqtkoy2b";
+const CLOUDINARY_UPLOAD_PRESET = "Konneckt";
+const PHOTO_MAX_DIM = 1600; // px — keeps uploads fast on factory WiFi
+
+function stampImage(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Could not read photo"));
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("Could not decode photo"));
+      img.onload = () => {
+        let w = img.width, h = img.height;
+        if (w > PHOTO_MAX_DIM || h > PHOTO_MAX_DIM) {
+          const scale = PHOTO_MAX_DIM / Math.max(w, h);
+          w = Math.round(w * scale); h = Math.round(h * scale);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, w, h);
+
+        const stamp = new Date().toLocaleString("en-IN", {
+          day:"2-digit", month:"short", year:"numeric",
+          hour:"2-digit", minute:"2-digit", second:"2-digit"
+        });
+        const fontSize = Math.max(16, Math.round(w * 0.028));
+        ctx.font = `bold ${fontSize}px Arial`;
+        const textW = ctx.measureText(stamp).width;
+        const pad = fontSize * 0.5;
+        const boxW = textW + pad * 2, boxH = fontSize + pad * 1.4;
+        const x = w - boxW - fontSize * 0.4, y = h - boxH - fontSize * 0.4;
+
+        ctx.fillStyle = "rgba(0,0,0,0.55)";
+        ctx.fillRect(x, y, boxW, boxH);
+        ctx.fillStyle = "#FFD400";
+        ctx.textBaseline = "middle";
+        ctx.fillText(stamp, x + pad, y + boxH / 2);
+
+        canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Could not encode photo")), "image/jpeg", 0.85);
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function uploadToCloudinary(blob, context) {
+  const formData = new FormData();
+  formData.append("file", blob);
+  formData.append("upload_preset", CLOUDINARY_UPLOAD_PRESET);
+  if (context) formData.append("context", context);
+
+  const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`, {
+    method: "POST",
+    body: formData
+  });
+  const data = await res.json();
+  if (!res.ok || !data.secure_url) throw new Error(data?.error?.message || "Upload failed");
+  return data.secure_url;
+}
+
+function photoContext(extra) {
+  return `product=${S.product}|date=${S.date}|round=${ROUND_LABELS[S.currentRound]}|${extra}`;
+}
+
+async function handlePhotoSelect(key, inputEl) {
+  const file = inputEl.files[0];
+  inputEl.value = ""; // allow re-selecting the same file later
+  if (!file) return;
+
+  const e0 = curEntries()[key] || {};
+  e0.photoStatus = "uploading";
+  curEntries()[key] = e0;
+  render();
+
+  try {
+    const blob = await stampImage(file);
+    const url = await uploadToCloudinary(blob, photoContext(`check=${key}`));
+    const e1 = curEntries()[key] || {};
+    e1.photo = url;
+    e1.photoStatus = "done";
+    curEntries()[key] = e1;
+  } catch (err) {
+    const e1 = curEntries()[key] || {};
+    e1.photoStatus = "error";
+    e1.photoError = err.message;
+    curEntries()[key] = e1;
+  }
+  render();
+}
+
+async function handleBraidPhotoSelect(m, inputEl) {
+  const file = inputEl.files[0];
+  inputEl.value = "";
+  if (!file) return;
+
+  const b0 = curBraiding()[m] || {};
+  b0.photoStatus = "uploading";
+  curBraiding()[m] = b0;
+  render();
+
+  try {
+    const blob = await stampImage(file);
+    const url = await uploadToCloudinary(blob, photoContext(`machine=${m}`));
+    const b1 = curBraiding()[m] || {};
+    b1.photo = url;
+    b1.photoStatus = "done";
+    curBraiding()[m] = b1;
+  } catch (err) {
+    const b1 = curBraiding()[m] || {};
+    b1.photoStatus = "error";
+    b1.photoError = err.message;
+    curBraiding()[m] = b1;
+  }
+  render();
+}
+
+function rPhotoBadge(entry, inputId) {
+  const status = entry?.photoStatus;
+  let badge;
+  if (status === "uploading") badge = `<span class="photo-badge photo-uploading">&#8987; Uploading&hellip;</span>`;
+  else if (status === "error") badge = `<span class="photo-badge photo-error">&#9888; Upload failed &middot; tap to retry</span>`;
+  else if (entry?.photo) badge = `<span class="photo-badge photo-done">&#128247; Photo attached &#10003;</span>`;
+  else badge = `<span class="photo-badge photo-empty">&#128247; Add photo (optional)</span>`;
+  return `<div class="photo-row" onclick="document.getElementById('${inputId}').click()">${badge}</div>`;
+}
 
 function saveState() {
   try {
@@ -1603,6 +1741,12 @@ function rChecks(proc) {
         </div>`;
     }
 
+    const photoInputId = `photo_${key}`.replace(/[^a-zA-Z0-9_]/g, "_");
+    const photoHtml = c.photo ? `
+      ${rPhotoBadge(e, photoInputId)}
+      <input type="file" accept="image/*" capture="environment" id="${photoInputId}" style="display:none"
+        onchange="handlePhotoSelect('${key}', this)">` : "";
+
     return `
       <div class="check-item ${cls}">
         <div class="check-char">${c.key}</div>
@@ -1610,6 +1754,7 @@ function rChecks(proc) {
         <div class="check-method">Method: ${c.method}</div>
         ${body}
         ${complete ? `<div class="check-rec"><span>${e.label}</span><span style="color:#94a3b8">${e.time}</span></div>` : ""}
+        ${photoHtml}
       </div>`;
   }).join("");
 }
@@ -1632,7 +1777,9 @@ function rBraiding(proc) {
       else if (entry.result==="FAIL") { cls="b-fail"; lbl = "FAIL"; }
       else                            { cls="b-na";   lbl = "No Run"; }
     }
+    const photoDot = entry?.photo ? `<span class="braid-photo-dot" title="Photo attached">&#128247;</span>` : "";
     return `<div class="braid-cell ${cls}" onclick="selectBraidMachine('${m}')">
+      ${photoDot}
       <div class="braid-machine">${m}</div>
       <div class="braid-status">${lbl}</div>
     </div>`;
@@ -1650,6 +1797,7 @@ function rBraiding(proc) {
     }).join("");
     const failOn = existing?.result==="FAIL" ? "b-fail-on" : "b-fail-opt";
     const naOn   = existing?.result==="NO_RUN"  ? "b-na-on"  : "b-na-opt";
+    const braidPhotoInputId = `photo_braid_${S.activeBraid}`.replace(/[^a-zA-Z0-9_]/g, "_");
     panel = `
       <div class="braid-panel">
         <div class="braid-panel-title">📍 ${S.activeBraid} — Select O.D. result:</div>
@@ -1660,6 +1808,9 @@ function rBraiding(proc) {
           <button class="braid-opt bo-na ${naOn}"
             onclick="recordBraid('${S.activeBraid}','NO_RUN','No Run')">⊘ No Run</button>
         </div>
+        ${rPhotoBadge(existing, braidPhotoInputId)}
+        <input type="file" accept="image/*" capture="environment" id="${braidPhotoInputId}" style="display:none"
+          onchange="handleBraidPhotoSelect('${S.activeBraid}', this)">
         <div class="braid-panel-cancel" onclick="S.activeBraid=null;render()">✕ Cancel</div>
       </div>`;
   }
