@@ -1237,7 +1237,7 @@ function buildProcesses(pk) {
         { label:"2.25–2.49", r:"PASS" },
         { label:"2.50–2.74", r:"PASS" },
         { label:"2.75–2.99", r:"PASS" },
-        { label:"Above  >3.0 ✗", r:"FAIL" }
+        { label:"Above  >3.0", r:"PASS" }
           ] },
         { key:"TC90",          spec:"≥ 8",           method:"ODR",
           type:"pf_sub", failLabel:"< 8  ✗  FAIL",
@@ -1384,14 +1384,16 @@ function braidStats() {
   return {
     passN: vals.filter(v => v.result === "PASS").length,
     failN: vals.filter(v => v.result === "FAIL").length,
-    naN:   vals.filter(v => v.result === "N/A").length
+    naN:   vals.filter(v => v.result === "NO_RUN").length
   };
 }
 
 function isProcDone(proc) {
   if (proc.type === "braiding") {
-    const vals = Object.values(curBraiding());
-    return vals.some(v => v.result === "PASS" || v.result === "FAIL");
+    const n   = PRODUCTS[S.product].braiding.machines;
+    const ms  = Array.from({length:n}, (_,i) => `BR-${String(i+1).padStart(2,"0")}`);
+    const brg = curBraiding();
+    return ms.every(m => brg[m] && brg[m].result);
   }
   return proc.checks.every(c => isCheckDone(c, pkey(proc.no, c.key)));
 }
@@ -1474,7 +1476,8 @@ function rProcess() {
   const proc  = procs[S.processIdx];
   const total = procs.length;
   const pct   = Math.round((S.processIdx / total) * 100);
-  const done  = isProcDone(proc);
+  const hasOp = !!S.procOperators[proc.no];
+  const done  = hasOp && isProcDone(proc);
 
   const body = proc.type === "braiding" ? rBraiding(proc) : rChecks(proc);
 
@@ -1495,12 +1498,16 @@ function rProcess() {
       <label style="margin-top:0;">Operator</label>
       <select id="proc-op" onchange="S.procOperators['${proc.no}']=this.value;render()">
         <option value="">— Select operator —</option>
-        ${OPERATORS.map(o => `<option value="${o}" ${(S.procOperators[proc.no]||S.operator)===o?"selected":""}>${o}</option>`).join("")}
+        ${OPERATORS.map(o => `<option value="${o}" ${S.procOperators[proc.no]===o?"selected":""}>${o}</option>`).join("")}
       </select>
+      ${hasOp ? `
       <hr class="proc-divider">
       ${body}
+      ` : `
+      <div class="alert" style="margin-top:14px;">⚠  Select an operator to begin this process.</div>
+      `}
     </div>
-    ${!done ? `<div class="alert">⚠  Complete all checks to continue.</div>` : ""}
+    ${hasOp && !done ? `<div class="alert">⚠  Complete all checks to continue.</div>` : ""}
     <div class="nav-row no-print">
       <button class="btn-back" onclick="navBack()">← Back</button>
       <button class="btn-next" onclick="navNext()" ${done?"":"disabled"}>
@@ -1598,7 +1605,7 @@ function rBraiding(proc) {
     else if (entry) {
       if      (entry.result==="PASS") { cls="b-pass"; lbl = entry.label; }
       else if (entry.result==="FAIL") { cls="b-fail"; lbl = "FAIL"; }
-      else                            { cls="b-na";   lbl = "N/A"; }
+      else                            { cls="b-na";   lbl = "No Run"; }
     }
     return `<div class="braid-cell ${cls}" onclick="selectBraidMachine('${m}')">
       <div class="braid-machine">${m}</div>
@@ -1617,7 +1624,7 @@ function rBraiding(proc) {
                 onclick="recordBraid('${S.activeBraid}','PASS','${esc(b.label)}')">${b.label}</button>`;
     }).join("");
     const failOn = existing?.result==="FAIL" ? "b-fail-on" : "b-fail-opt";
-    const naOn   = existing?.result==="N/A"  ? "b-na-on"  : "b-na-opt";
+    const naOn   = existing?.result==="NO_RUN"  ? "b-na-on"  : "b-na-opt";
     panel = `
       <div class="braid-panel">
         <div class="braid-panel-title">📍 ${S.activeBraid} — Select O.D. result:</div>
@@ -1626,7 +1633,7 @@ function rBraiding(proc) {
           <button class="braid-opt bo-fail ${failOn}"
             onclick="recordBraid('${S.activeBraid}','FAIL','FAIL')">✗ FAIL</button>
           <button class="braid-opt bo-na ${naOn}"
-            onclick="recordBraid('${S.activeBraid}','N/A','N/A')">— N/A</button>
+            onclick="recordBraid('${S.activeBraid}','NO_RUN','No Run')">⊘ No Run</button>
         </div>
         <div class="braid-panel-cancel" onclick="S.activeBraid=null;render()">✕ Cancel</div>
       </div>`;
@@ -1636,7 +1643,7 @@ function rBraiding(proc) {
     <div class="braid-tally">
       <div class="tally-chip t-pass">✓ ${st.passN} PASS</div>
       <div class="tally-chip t-fail">✗ ${st.failN} FAIL</div>
-      <div class="tally-chip t-na">— ${st.naN} N/A</div>
+      <div class="tally-chip t-na">⊘ ${st.naN} No Run</div>
     </div>` : "";
 
   return `
@@ -1773,7 +1780,7 @@ function rVerify() {
         <div class="ver-info">
           <div class="sum-proc">Process ${proc.no}</div>
           <div class="sum-char">Wire Braiding</div>
-          <div class="sum-obs">${st.passN} PASS · ${st.failN} FAIL · ${st.naN} N/A</div>
+          <div class="sum-obs">${st.passN} PASS · ${st.failN} FAIL · ${st.naN} No Run</div>
           <span class="badge ${st.failN===0?"b-ok":"b-ng"}" style="margin-top:4px;display:inline-block;">${st.failN===0?"OK":"NG"}</span>
         </div>
         <button class="ver-btn ${isV?"ok":""}" onclick="toggleVerify('${k}')">${isV?"✓ Verified":"Verify"}</button>
@@ -1895,7 +1902,7 @@ function rReport() {
       <div class="report-meta">
         <div class="meta-item"><div class="meta-lbl">Product</div><div class="meta-val">${PRODUCTS[S.product].label}</div></div>
         <div class="meta-item"><div class="meta-lbl">Date</div><div class="meta-val">${S.date}</div></div>
-        <div class="meta-item"><div class="meta-lbl">Operator</div><div class="meta-val">${S.operator}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Prepared By</div><div class="meta-val">${S.operator}</div></div>
         <div class="meta-item"><div class="meta-lbl">Shift</div><div class="meta-val">${S.shift}</div></div>
         <div class="meta-item"><div class="meta-lbl">Verified By</div><div class="meta-val">${S.supName}</div></div>
         <div class="meta-item"><div class="meta-lbl">Finalised</div><div class="meta-val" style="font-size:12px;">${S.finalisedAt}</div></div>
