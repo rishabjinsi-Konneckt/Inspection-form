@@ -39,6 +39,7 @@ select:focus, input[type="date"]:focus { border-color: #2563eb; }
 .check-item { border: 2px solid #f1f5f9; border-radius: 12px; padding: 14px; margin-top: 12px; }
 .check-item.done-pass { border-color: #bbf7d0; background: #f0fdf4; }
 .check-item.done-fail { border-color: #fecaca; background: #fff5f5; }
+.check-item.done-na   { border-color: #e2e8f0; background: #f1f5f9; }
 .check-char   { font-weight: 700; font-size: 15px; }
 .check-spec   { font-size: 12px; color: #64748b; margin-top: 3px; }
 .check-method { font-size: 11px; color: #94a3b8; margin-top: 2px; }
@@ -140,6 +141,7 @@ select:focus, input[type="date"]:focus { border-color: #2563eb; }
 .badge  { padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 700; white-space: nowrap; }
 .b-ok   { background: #dcfce7; color: #16a34a; }
 .b-ng   { background: #fee2e2; color: #dc2626; }
+.b-na   { background: #f1f5f9; color: #64748b; }
 
 .sum-row  { display: flex; justify-content: space-between; align-items: flex-start; padding: 11px 0; border-bottom: 1px solid #f8fafc; gap: 10px; }
 .sum-proc { font-size: 11px; color: #94a3b8; font-weight: 600; text-transform: uppercase; }
@@ -1524,6 +1526,7 @@ let S = {
   activeBraid:null,
   supName:"", verified:{}, finalisedAt:"",
   submitStatus:"", submitError:"",
+  batchBase:"", batchNo:"", batchDay:1,
   logFilters:{date:"",product:"",search:""}, logResults:null, logLoading:false, logError:""
 };
 
@@ -1538,10 +1541,39 @@ function pkey(no, ch) { return `${no}_${ch}`; }
 function isCheckDone(chk, key) {
   const e = curEntries()[key];
   if (!e) return false;
+  if (e.result === "NO_RUN") return true;
   if (chk.type === "pf_sub") return !!e.label;
   if (chk.type === "manual") return !!e.label;
   if (chk.type === "pf_manual") return e.result==="FAIL" || !!e.label;
   return true;
+}
+
+// ═══════════════════════════════════════════════
+// BATCH NUMBERS
+// Base: YYYY + reverse(DDMM) + "-" + ProductCode  (day the batch is first created)
+// Continuing on a later calendar date appends "-N" (N = which day of work this is)
+// ═══════════════════════════════════════════════
+const BATCH_REG_KEY = "fqa12_batch_registry_v1";
+
+function genBatchBase(dateStr, productCode) {
+  const [y, m, d] = dateStr.split("-");
+  const ddmm = `${d}${m}`;
+  const reversed = ddmm.split("").reverse().join("");
+  return `${y}${reversed}-${productCode}`;
+}
+
+function loadBatchRegistry() {
+  try { return JSON.parse(localStorage.getItem(BATCH_REG_KEY)) || {}; }
+  catch (e) { return {}; }
+}
+function saveBatchRegistry(reg) {
+  try { localStorage.setItem(BATCH_REG_KEY, JSON.stringify(reg)); }
+  catch (e) { /* storage unavailable — fail silently */ }
+}
+function registerBatchDay(base, product, day, dateStr) {
+  const reg = loadBatchRegistry();
+  reg[base] = { product, lastDay: day, lastDate: dateStr };
+  saveBatchRegistry(reg);
 }
 
 function braidStats() {
@@ -1589,6 +1621,14 @@ function rSetup() {
     `<option value="${k}" ${S.product===k?"selected":""}>${PRODUCTS[k].label} — ${PRODUCTS[k].desc}</option>`).join("");
   const oOpts = OPERATORS.map(o =>
     `<option value="${o}" ${S.operator===o?"selected":""}>${o}</option>`).join("");
+
+  const batchPreview = (S.product && S.date) ? genBatchBase(S.date, PRODUCTS[S.product].label) : "";
+
+  const registry  = loadBatchRegistry();
+  const batchKeys = Object.keys(registry);
+  const contOpts  = batchKeys.map(b =>
+    `<option value="${b}">${b} — ${registry[b].product} (day ${registry[b].lastDay} last done ${registry[b].lastDate})</option>`).join("");
+
   return `
     <div class="header">
       <h1>F-QA-12 · Inprocess Inspection</h1>
@@ -1598,9 +1638,10 @@ function rSetup() {
       <div style="font-size:17px;font-weight:800;margin-bottom:4px;">Start Inspection</div>
       <div style="font-size:13px;color:#64748b;margin-bottom:16px;">Select details below to begin.</div>
       <label>Product</label>
-      <select id="s-product" onchange="S.product=this.value"><option value="">— Select product —</option>${pOpts}</select>
+      <select id="s-product" onchange="S.product=this.value;render()"><option value="">— Select product —</option>${pOpts}</select>
       <label>Date</label>
-      <input type="date" id="s-date" value="${S.date}" onchange="S.date=this.value">
+      <input type="date" id="s-date" value="${S.date}" onchange="S.date=this.value;render()">
+      ${batchPreview ? `<div style="font-size:12px;color:#64748b;margin-top:6px;">Batch No. (auto): <strong>${batchPreview}</strong></div>` : ""}
       <label>Shift</label>
       <div class="shift-row">
         ${ROUND_LABELS.map(sh =>
@@ -1611,6 +1652,14 @@ function rSetup() {
       <button class="btn-primary" onclick="startInspection()">Begin Inspection →</button>
       <button class="btn-outline" onclick="S.screen='log';render()">📊 View Inspection Log</button>
     </div>
+    ${batchKeys.length ? `
+    <div class="card">
+      <div style="font-weight:700;font-size:15px;margin-bottom:8px;">↻ Continue Existing Batch</div>
+      <div style="font-size:12px;color:#64748b;margin-bottom:10px;">Pick a batch worked on a previous day, then select Prepared By and Shift above before continuing.</div>
+      <label style="margin-top:0;">Batch Number</label>
+      <select id="s-batch"><option value="">— Select batch —</option>${contOpts}</select>
+      <button class="btn-outline" style="background:#fff7ed;color:#c2410c;border-color:#f97316;" onclick="continueBatch()">↻ Continue This Batch →</button>
+    </div>` : ""}
     <div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:4px;">F-QA-12 Rev.01 · Eff. 01.04.19</div>`;
 }
 
@@ -1620,6 +1669,30 @@ function startInspection() {
   S.operator = document.getElementById("s-op").value;
   if (!S.product)  { alert("Please select a product."); return; }
   if (!S.operator) { alert("Please select an operator."); return; }
+  S.batchBase = genBatchBase(S.date, PRODUCTS[S.product].label);
+  S.batchDay  = 1;
+  S.batchNo   = S.batchBase;
+  S.processIdx = 0; S.currentRound = 0; S.procOperators = {};
+  S.roundData = ROUND_LABELS.map(() => emptyRound());
+  S.activeBraid = null; S.verified = {};
+  S.screen = "process"; render();
+}
+
+function continueBatch() {
+  const base = document.getElementById("s-batch").value;
+  if (!base) { alert("Please select a batch to continue."); return; }
+  const op = document.getElementById("s-op").value;
+  if (!op) { alert("Please select an operator (Prepared By)."); return; }
+  const reg  = loadBatchRegistry();
+  const info = reg[base];
+  if (!info) { alert("Batch not found."); return; }
+
+  S.product   = info.product;
+  S.operator  = op;
+  S.date      = today();
+  S.batchBase = base;
+  S.batchDay  = info.lastDay + 1;
+  S.batchNo   = `${base}-${S.batchDay}`;
   S.processIdx = 0; S.currentRound = 0; S.procOperators = {};
   S.roundData = ROUND_LABELS.map(() => emptyRound());
   S.activeBraid = null; S.verified = {};
@@ -1648,10 +1721,12 @@ function rProcess() {
 
   const body = proc.type === "braiding" ? rBraiding(proc) : rChecks(proc);
 
+  const canNoRun = S.batchDay > 1 && hasOp && !done;
+
   return `
     <div class="header">
       <h1>Process ${proc.no} · ${proc.name}</h1>
-      <p>${PRODUCTS[S.product].label} · ${S.date} · ${S.shift}</p>
+      <p>${PRODUCTS[S.product].label} · ${S.date} · ${S.shift}${S.batchNo?` · Batch ${S.batchNo}`:""}</p>
     </div>
     <div class="progress-wrap">
       <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
@@ -1677,6 +1752,7 @@ function rProcess() {
     ${hasOp && !done ? `<div class="alert">⚠  Complete all checks to continue.</div>` : ""}
     <div class="nav-row no-print">
       <button class="btn-back" onclick="navBack()">← Back</button>
+      ${canNoRun ? `<button class="btn-outline" style="width:auto;flex:1.8;margin-top:0;padding:15px 6px;font-size:12px;background:#f8fafc;color:#64748b;border-color:#cbd5e1;" onclick="markProcessNoRun()">⊘ No Run — Didn't Run Today</button>` : ""}
       <button class="btn-next" onclick="navNext()" ${done?"":"disabled"}>
         ${S.processIdx===total-1?"Review All →":"Next →"}
       </button>
@@ -1689,7 +1765,7 @@ function rChecks(proc) {
     const key      = pkey(proc.no, c.key);
     const e        = curEntries()[key];
     const complete = isCheckDone(c, key);
-    const cls      = complete ? (e.result==="PASS" ? "done-pass" : "done-fail") : "";
+    const cls      = complete ? (e.result==="PASS" ? "done-pass" : e.result==="NO_RUN" ? "done-na" : "done-fail") : "";
 
     let body = "";
     if (c.type === "pf") {
@@ -1900,6 +1976,25 @@ function navNext() {
   render();
 }
 
+// Only available when continuing an existing batch on a later day (S.batchDay > 1).
+// Marks every check in the current process as No Run for today's session, then advances.
+function markProcessNoRun() {
+  const procs = buildProcesses(S.product);
+  const proc  = procs[S.processIdx];
+  if (proc.type === "braiding") {
+    const n  = PRODUCTS[S.product].braiding.machines;
+    const ms = Array.from({length:n}, (_,i) => `BR-${String(i+1).padStart(2,"0")}`);
+    ms.forEach(m => { curBraiding()[m] = { result:"NO_RUN", label:"No Run" }; });
+  } else {
+    proc.checks.forEach(c => {
+      const key = pkey(proc.no, c.key);
+      curEntries()[key] = { result:"NO_RUN", label:"No Run", time: nowTime() };
+    });
+  }
+  render();
+  navNext();
+}
+
 // ═══════════════════════════════════════════════
 // SCREEN 3 — REVIEW
 // ═══════════════════════════════════════════════
@@ -1920,7 +2015,10 @@ function rReview() {
         const vals = Object.values(rd.braiding);
         if (!vals.length) return `<td style="color:#94a3b8;font-size:12px;">—</td>`;
         const f = vals.filter(v=>v.result==="FAIL").length;
-        return `<td><span class="badge ${f===0?"b-ok":"b-ng"}" style="font-size:11px;">${f===0?"OK":"NG"}</span></td>`;
+        const allNoRun = vals.every(v=>v.result==="NO_RUN");
+        const cls = allNoRun ? "b-na" : f===0 ? "b-ok" : "b-ng";
+        const lbl = allNoRun ? "No Run" : f===0 ? "OK" : "NG";
+        return `<td><span class="badge ${cls}" style="font-size:11px;">${lbl}</span></td>`;
       }).join("");
       return `<tr><td colspan="2" style="font-size:12px;color:#1e3a5f;font-weight:700;">030 Wire Braiding</td>${cells}</tr>`;
     }
@@ -1928,7 +2026,8 @@ function rReview() {
       const cells = S.roundData.map(rd => {
         const e = rd.entries[pkey(proc.no, c.key)];
         if (!e) return `<td style="color:#94a3b8;font-size:12px;">—</td>`;
-        return `<td><span class="badge ${e.result==="PASS"?"b-ok":"b-ng"}" style="font-size:11px;">${e.label||e.result}</span></td>`;
+        const cls = e.result==="PASS" ? "b-ok" : e.result==="NO_RUN" ? "b-na" : "b-ng";
+        return `<td><span class="badge ${cls}" style="font-size:11px;">${e.label||e.result}</span></td>`;
       }).join("");
       return `<tr>
         <td style="font-size:11px;color:#64748b;">${ci===0?"P"+proc.no:""}</td>
@@ -1940,7 +2039,7 @@ function rReview() {
 
   return `
     <div class="header"><h1>Review — All Readings</h1>
-      <p>${PRODUCTS[S.product].label} · ${S.operator} · ${S.date}</p></div>
+      <p>${PRODUCTS[S.product].label} · ${S.operator} · ${S.date}${S.batchNo?` · Batch ${S.batchNo}`:""}</p></div>
     ${totalFails>0
       ? `<div class="alert">⚠  ${totalFails} check(s) FAILED across all readings.</div>`
       : `<div class="alert green">✅ All readings complete. Ready for verification.</div>`}
@@ -1981,7 +2080,12 @@ function rVerify() {
           <div class="sum-proc">Process ${proc.no}</div>
           <div class="sum-char">Wire Braiding</div>
           <div class="sum-obs">${st.passN} PASS · ${st.failN} FAIL · ${st.naN} No Run</div>
-          <span class="badge ${st.failN===0?"b-ok":"b-ng"}" style="margin-top:4px;display:inline-block;">${st.failN===0?"OK":"NG"}</span>
+          ${(() => {
+            const allNoRun = st.passN===0 && st.failN===0 && st.naN>0;
+            const cls = allNoRun ? "b-na" : st.failN===0 ? "b-ok" : "b-ng";
+            const lbl = allNoRun ? "No Run" : st.failN===0 ? "OK" : "NG";
+            return `<span class="badge ${cls}" style="margin-top:4px;display:inline-block;">${lbl}</span>`;
+          })()}
         </div>
         <button class="ver-btn ${isV?"ok":""}" onclick="toggleVerify('${k}')">${isV?"✓ Verified":"Verify"}</button>
       </div>`;
@@ -1990,13 +2094,15 @@ function rVerify() {
       const key = pkey(proc.no, c.key);
       const e   = S.roundData[0].entries[key] || S.roundData[1].entries[key] || S.roundData[2].entries[key] || S.roundData[3].entries[key];
       const isV = S.verified[key];
+      const vCls = e?.result==="PASS" ? "b-ok" : e?.result==="NO_RUN" ? "b-na" : "b-ng";
+      const vLbl = e?.result==="PASS" ? "OK" : e?.result==="NO_RUN" ? "No Run" : "NG";
       return `<div class="ver-row">
         <div class="ver-info">
           <div class="sum-proc">Process ${proc.no} · ${proc.machine}</div>
           <div class="sum-char">${c.key}</div>
           <div class="sum-obs">Spec: ${c.spec}</div>
-          <span class="badge ${e?.result==="PASS"?"b-ok":"b-ng"}" style="margin-top:4px;display:inline-block;">
-            ${e?.result==="PASS"?"OK":"NG"} · ${e?.label||"—"}
+          <span class="badge ${vCls}" style="margin-top:4px;display:inline-block;">
+            ${vLbl} · ${e?.label||"—"}
           </span>
         </div>
         <button class="ver-btn ${isV?"ok":""}" onclick="toggleVerify('${key}')">${isV?"✓ Verified":"Verify"}</button>
@@ -2035,6 +2141,7 @@ function finalise() {
   const unverifiedN = allKeys.filter(k => !S.verified[k]).length;
   if (unverifiedN > 0) { alert(`Please verify all entries first — ${unverifiedN} still unverified.`); return; }
   S.finalisedAt = new Date().toLocaleString("en-IN");
+  if (S.batchBase) registerBatchDay(S.batchBase, S.product, S.batchDay, S.date);
   S.screen = "report"; render();
   submitToSheet(); // fires automatically once the report is finalised — no manual step needed
 }
@@ -2049,7 +2156,7 @@ const SHEET_HEADERS = [
   "Length","Wire Cut","Appearance (P090)",
   "O.D. Photo","I.D. Photo","Pressure Photo (P050)","Length Photo (P090)",
   "Crimp O.D. Photo (P120)","Pressure Testing Photo (P120)","Fitting Load Test Photo (P120)","Air Leakage Photo (P120)",
-  "Braiding Photos","Supervisor","Finalised At","Crimp O.D. Measured (P120)"
+  "Braiding Photos","Supervisor","Finalised At","Crimp O.D. Measured (P120)","Batch No."
 ];
 
 function buildSheetRows() {
@@ -2091,7 +2198,8 @@ function buildSheetRows() {
       braidPhotos,
       S.supName,
       S.finalisedAt,
-      g("120","Crimp O.D.").label || ""
+      g("120","Crimp O.D.").label || "",
+      S.batchNo || ""
     ];
   }).filter(Boolean);
 }
@@ -2160,8 +2268,12 @@ function rReport() {
         return `<td style="font-size:9px;">${detail||"—"}</td>`;
       }).join("");
       const jdgCells = S.roundData.map(rd => {
-        const f = Object.values(rd.braiding).filter(v=>v.result==="FAIL").length;
-        return `<td><span class="badge ${f===0?"b-ok":"b-ng"}">${f===0?"OK":"NG"}</span></td>`;
+        const vals = Object.values(rd.braiding);
+        const f = vals.filter(v=>v.result==="FAIL").length;
+        const allNoRun = vals.length>0 && vals.every(v=>v.result==="NO_RUN");
+        const cls = allNoRun ? "b-na" : f===0 ? "b-ok" : "b-ng";
+        const lbl = allNoRun ? "No Run" : f===0 ? "OK" : "NG";
+        return `<td><span class="badge ${cls}">${lbl}</span></td>`;
       }).join("");
       return `<tr class="first">
         <td style="font-weight:700;color:#1e3a5f;">070</td>
@@ -2178,7 +2290,10 @@ function rReport() {
       }).join("");
       const jdgCells = S.roundData.map(rd => {
         const e = rd.entries[pkey(proc.no, c.key)];
-        return `<td>${e?`<span class="badge ${e.result==="PASS"?"b-ok":"b-ng"}">${e.result==="PASS"?"OK":"NG"}</span>`:"—"}</td>`;
+        if (!e) return `<td>—</td>`;
+        const cls = e.result==="PASS" ? "b-ok" : e.result==="NO_RUN" ? "b-na" : "b-ng";
+        const lbl = e.result==="PASS" ? "OK" : e.result==="NO_RUN" ? "No Run" : "NG";
+        return `<td><span class="badge ${cls}">${lbl}</span></td>`;
       }).join("");
       return `<tr ${ci===0?"class='first'":""}>
         <td ${ci===0?`style="font-weight:700;color:#1e3a5f;"`:""}>${ci===0?proc.no:""}</td>
@@ -2212,6 +2327,7 @@ function rReport() {
       <div style="font-size:11px;color:#94a3b8;margin-bottom:14px;">Fmt. No.: F-QA-12 · Rev.01 · Eff. Date: 01.04.19</div>
       <div class="report-meta">
         <div class="meta-item"><div class="meta-lbl">Product</div><div class="meta-val">${PRODUCTS[S.product].label}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Batch No.</div><div class="meta-val">${S.batchNo||"—"}</div></div>
         <div class="meta-item"><div class="meta-lbl">Date</div><div class="meta-val">${S.date}</div></div>
         <div class="meta-item"><div class="meta-lbl">Prepared By</div><div class="meta-val">${S.operator}</div></div>
         <div class="meta-item"><div class="meta-lbl">Shift</div><div class="meta-val">${S.shift}</div></div>
@@ -2254,6 +2370,7 @@ function newInspection() {
         roundData:ROUND_LABELS.map(() => emptyRound()),
         activeBraid:null, supName:"", verified:{}, finalisedAt:"",
         submitStatus:"", submitError:"",
+        batchBase:"", batchNo:"", batchDay:1,
         logFilters:{date:"",product:"",search:""}, logResults:null, logLoading:false, logError:"" };
   render();
 }
