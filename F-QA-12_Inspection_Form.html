@@ -1526,15 +1526,22 @@ let S = {
   activeBraid:null,
   supName:"", verified:{}, finalisedAt:"",
   submitStatus:"", submitError:"",
-  batchBase:"", batchNo:"", batchDay:1, reportedThroughIdx:0,
-  logFilters:{date:"",product:"",search:""}, logResults:null, logLoading:false, logError:""
+  batchBase:"", batchNo:"", batchDay:1, reportedThroughIdx:0, dayRowNum:null,
+  logFilters:{date:"",product:"",search:""}, logResults:null, logLoading:false, logError:"",
+  vrPin:"", vrName:"", vrRows:null, vrLoading:false, vrError:""
 };
 
 // helpers so rest of code stays concise
 function curEntries()  { return S.roundData[S.currentRound].entries;  }
 function curBraiding() { return S.roundData[S.currentRound].braiding; }
 
-function today()   { return new Date().toISOString().slice(0,10); }
+// Uses LOCAL calendar date (not UTC) — toISOString() would silently roll back to
+// "yesterday" for any IST user working between midnight and 5:30am, which would corrupt
+// same-day-upsert / batch-day-suffix logic right when night-shift batches need it most.
+function today() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
 function nowTime() { return new Date().toTimeString().slice(0,5); }
 function pkey(no, ch) { return `${no}_${ch}`; }
 
@@ -1570,9 +1577,29 @@ function saveBatchRegistry(reg) {
   try { localStorage.setItem(BATCH_REG_KEY, JSON.stringify(reg)); }
   catch (e) { /* storage unavailable — fail silently */ }
 }
-function registerBatchDay(base, product, day, dateStr, resumeIdx, complete) {
+// Registry is per-batch, but progress within a batch is tracked per-round (a "round" is
+// now exactly whichever Shift was selected on Setup/Continue when that pass was done).
+// reg[base] = { product, lastDay, lastDate, rounds: { [roundIdx]: {resumeIdx, dayStartIdx, lastDate, rowNum, complete} } }
+function registerBatchDay(base, opts) {
   const reg = loadBatchRegistry();
-  reg[base] = { product, lastDay: day, lastDate: dateStr, resumeIdx: resumeIdx||0, complete: !!complete };
+  const existing = reg[base] || { rounds: {} };
+  const rounds = Object.assign({}, existing.rounds);
+  if (opts.roundIdx != null) {
+    const prevRound = rounds[opts.roundIdx] || {};
+    rounds[opts.roundIdx] = {
+      resumeIdx:   opts.roundResumeIdx  != null ? opts.roundResumeIdx  : prevRound.resumeIdx || 0,
+      dayStartIdx: opts.roundDayStartIdx!= null ? opts.roundDayStartIdx: prevRound.dayStartIdx || 0,
+      lastDate:    opts.roundLastDate   || prevRound.lastDate || "",
+      rowNum:      opts.roundRowNum     !== undefined ? opts.roundRowNum : (prevRound.rowNum || null),
+      complete:    opts.roundComplete  != null ? !!opts.roundComplete : !!prevRound.complete
+    };
+  }
+  reg[base] = {
+    product:  opts.product,
+    lastDay:  opts.batchLastDay,
+    lastDate: opts.batchLastDate,
+    rounds
+  };
   saveBatchRegistry(reg);
 }
 
@@ -1608,7 +1635,8 @@ function allEntryKeys() {
 // RENDER ROUTER
 // ═══════════════════════════════════════════════
 function render() {
-  const fns = { setup:rSetup, process:rProcess, review:rReview, verify:rVerify, report:rReport, log:rLog, paused:rPaused };
+  const fns = { setup:rSetup, process:rProcess, review:rReview, verify:rVerify, report:rReport, log:rLog, paused:rPaused,
+    vrpin:rVrPin, vrname:rVrName, vrlist:rVrList };
   document.getElementById("app").innerHTML = fns[S.screen]();
   saveState();
 }
@@ -1625,9 +1653,14 @@ function rSetup() {
   const batchPreview = (S.product && S.date) ? genBatchBase(S.date, PRODUCTS[S.product].label) : "";
 
   const registry  = loadBatchRegistry();
-  const batchKeys = Object.keys(registry).filter(b => !registry[b].complete);
-  const contOpts  = batchKeys.map(b =>
-    `<option value="${b}">${b} — ${registry[b].product} (day ${registry[b].lastDay} last done ${registry[b].lastDate})</option>`).join("");
+  const batchKeys = Object.keys(registry);
+  const contOpts  = batchKeys.map(b => {
+    const rounds = registry[b].rounds || {};
+    const thisRoundIdx = ROUND_LABELS.indexOf(S.shift);
+    const thisRound = rounds[thisRoundIdx];
+    const tag = thisRound && thisRound.complete ? " · this shift already finalised" : "";
+    return `<option value="${b}">${b} — ${registry[b].product} (day ${registry[b].lastDay} last done ${registry[b].lastDate})${tag}</option>`;
+  }).join("");
 
   return `
     <div class="header">
@@ -1644,13 +1677,14 @@ function rSetup() {
       ${batchPreview ? `<div style="font-size:12px;color:#64748b;margin-top:6px;">Batch No. (auto): <strong>${batchPreview}</strong></div>` : ""}
       <label>Shift</label>
       <div class="shift-row">
-        ${ROUND_LABELS.map(sh =>
-          `<div class="shift-btn ${S.shift===sh?"on":""}" onclick="S.shift='${sh}';render()">${sh}</div>`).join("")}
+        ${ROUND_LABELS.map((sh,shi) =>
+          `<div class="shift-btn ${S.shift===sh?"on":""}" onclick="S.shift='${sh}';S.currentRound=${shi};render()">${sh}</div>`).join("")}
       </div>
       <label>Prepared By</label>
       <select id="s-op" onchange="S.operator=this.value"><option value="">— Select operator —</option>${oOpts}</select>
       <button class="btn-primary" onclick="startInspection()">Begin Inspection →</button>
       <button class="btn-outline" onclick="S.screen='log';render()">📊 View Inspection Log</button>
+      <button class="btn-outline" style="background:#faf5ff;color:#7e22ce;border-color:#9333ea;" onclick="openVerifyReports()">🔒 Verify Reports</button>
     </div>
     ${batchKeys.length ? `
     <div class="card">
@@ -1673,14 +1707,18 @@ function startInspection() {
   S.batchDay  = 1;
   S.batchNo   = S.batchBase;
   S.reportedThroughIdx = 0;
-  S.processIdx = 0; S.currentRound = 0; S.procOperators = {};
+  S.dayRowNum = null;
+  S.processIdx = 0;
+  S.currentRound = Math.max(0, ROUND_LABELS.indexOf(S.shift));
+  S.procOperators = {};
   S.roundData = ROUND_LABELS.map(() => emptyRound());
   S.activeBraid = null; S.verified = {};
   S.screen = "process"; render();
 }
 
-// Continuing a batch picks up exactly where the operator left off — process progress
-// carries forward (nothing is wiped), only the date/batch-day/processIdx move forward.
+// Continuing a batch picks up exactly where that SHIFT (= round) left off — process
+// progress for that round carries forward (nothing is wiped). Which round is "active" is
+// entirely determined by whichever Shift button is selected here, not by an in-app tab.
 function continueBatch() {
   const base = document.getElementById("s-batch").value;
   if (!base) { alert("Please select a batch to continue."); return; }
@@ -1690,32 +1728,45 @@ function continueBatch() {
   const info = reg[base];
   if (!info) { alert("Batch not found."); return; }
 
+  const roundIdx  = Math.max(0, ROUND_LABELS.indexOf(S.shift));
+  const rounds    = info.rounds || {};
+  const roundInfo = rounds[roundIdx];
+
+  if (roundInfo && roundInfo.complete) {
+    alert(`The "${S.shift}" shift for batch ${base} is already finalised.`);
+    return;
+  }
+
+  const todayStr    = today();
+  const batchSameDay = info.lastDate === todayStr;
+
   S.product   = info.product;
   S.operator  = op;
-  S.date      = today();
+  S.date      = todayStr;
   S.batchBase = base;
-  S.batchDay  = info.lastDay + 1;
-  S.batchNo   = `${base}-${S.batchDay}`;
-  S.processIdx = info.resumeIdx || 0;
-  S.reportedThroughIdx = info.resumeIdx || 0;
-  S.currentRound = 0;
+  S.batchDay  = batchSameDay ? info.lastDay : info.lastDay + 1;
+  S.batchNo   = S.batchDay <= 1 ? base : `${base}-${S.batchDay}`;
+  S.currentRound = roundIdx;
+
+  if (roundInfo) {
+    const roundSameDay = roundInfo.lastDate === todayStr;
+    S.processIdx = roundInfo.resumeIdx || 0;
+    S.reportedThroughIdx = roundSameDay ? (roundInfo.dayStartIdx || 0) : (roundInfo.resumeIdx || 0);
+    S.dayRowNum = roundSameDay ? (roundInfo.rowNum || null) : null;
+  } else {
+    // fresh round within an existing batch — never touched before
+    S.processIdx = 0;
+    S.reportedThroughIdx = 0;
+    S.dayRowNum = null;
+  }
   S.activeBraid = null;
-  // procOperators / roundData / verified intentionally NOT reset — this batch's progress continues.
+  // procOperators / roundData / verified intentionally NOT reset — progress continues.
   S.screen = "process"; render();
 }
 
 // ═══════════════════════════════════════════════
 // SCREEN 2 — PROCESS
 // ═══════════════════════════════════════════════
-function rRoundTabs() {
-  return ROUND_LABELS.map((lbl, i) => {
-    const done = S.roundData[i] && Object.keys(S.roundData[i].entries).length > 0;
-    const active = i === S.currentRound;
-    return `<div class="round-tab ${active?"rt-active":done?"rt-done":"rt-empty"}"
-      onclick="S.currentRound=${i};render()">${lbl}${done&&!active?' ✓':''}</div>`;
-  }).join("");
-}
-
 function rProcess() {
   const procs = buildProcesses(S.product);
   const proc  = procs[S.processIdx];
@@ -2049,7 +2100,6 @@ function rReview() {
     ${totalFails>0
       ? `<div class="alert">⚠  ${totalFails} check(s) FAILED across all readings.</div>`
       : `<div class="alert green">✅ All readings complete. Ready for verification.</div>`}
-    <div class="round-tabs">${rRoundTabs()}</div>
     <div class="card" style="overflow-x:auto;">
       <table style="width:100%;border-collapse:collapse;font-size:13px;">
         <thead><tr style="background:#f1f5f9;">
@@ -2062,7 +2112,7 @@ function rReview() {
     </div>
     <div class="nav-row no-print">
       <button class="btn-back" onclick="S.processIdx=buildProcesses(S.product).length-1;S.screen='process';render()">← Edit</button>
-      <button class="btn-next" onclick="S.screen='verify';render()">Submit for Verification →</button>
+      <button class="btn-next" onclick="S.screen='verify';render()">Continue to Finalise →</button>
     </div>`;
 }
 
@@ -2117,55 +2167,80 @@ function rVerify() {
   }).join("");
 
   return `
-    <div class="header sup"><h1>🔍 Supervisor Verification</h1>
-      <p>Review entries and sign off</p></div>
+    <div class="header sup"><h1>🔍 Review Checklist</h1>
+      <p>Optional read-through before finalising — real verification happens separately via Verify Reports</p></div>
     <div class="card">
-      <label>Verified By</label>
+      <label>Reviewed By</label>
       <select onchange="S.supName=this.value">
-        <option value="">— Select supervisor —</option>${supOpts}
+        <option value="">— Select name —</option>${supOpts}
       </select>
     </div>
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-        <div style="font-weight:700;font-size:15px;">${verN} / ${allKeys.length} verified</div>
-        <button class="verify-all-btn" onclick="verifyAll()">Verify All ✓</button>
+        <div style="font-weight:700;font-size:15px;">${verN} / ${allKeys.length} checked off</div>
+        <button class="verify-all-btn" onclick="verifyAll()">Check All ✓</button>
       </div>
       ${rows}
     </div>
     <div class="nav-row no-print">
       <button class="btn-back" onclick="S.screen='review';render()">← Back</button>
-      <button class="btn-next purple" onclick="finalise()" ${(S.supName && verN===allKeys.length)?"":"disabled"}>Finalise Report →</button>
+      <button class="btn-next purple" onclick="finalise()" ${S.supName?"":"disabled"}>Finalise Report →</button>
     </div>
-    ${verN<allKeys.length ? `<div class="alert" style="margin-top:10px;">⚠ Verify all ${allKeys.length} entries (${allKeys.length-verN} remaining) before finalising.</div>` : ""}`;
+    <div style="font-size:12px;color:#94a3b8;margin-top:10px;">Note: cross-device sign-off is handled later, from the home screen's "Verify Reports" section — it doesn't block finalising here.</div>`;
 }
 
 function toggleVerify(k) { S.verified[k] = !S.verified[k]; render(); }
 function verifyAll()     { allEntryKeys().forEach(k => S.verified[k] = true); render(); }
+
+// Finalising only requires every process to be DONE (real data or No Run) for the
+// current round/shift. Independent, cross-device verification of the saved report
+// happens later via the separate "Verify Reports" flow (see Verify Reports section) —
+// it is an audit signal, not a gate, since the verifier works off the Sheet afterward.
 function finalise() {
-  if (!S.supName) { alert("Please select a supervisor."); return; }
-  const allKeys = allEntryKeys();
-  const unverifiedN = allKeys.filter(k => !S.verified[k]).length;
-  if (unverifiedN > 0) { alert(`Please verify all entries first — ${unverifiedN} still unverified.`); return; }
+  const procs = buildProcesses(S.product);
+  const notDone = procs.filter(p => !isProcDone(p));
+  if (notDone.length > 0) { alert(`Please complete all processes first — ${notDone.length} remaining.`); return; }
   S.finalisedAt = new Date().toLocaleString("en-IN");
   if (S.batchBase) {
     const procCount = buildProcesses(S.product).length;
-    registerBatchDay(S.batchBase, S.product, S.batchDay, S.date, procCount, true); // batch fully complete — drops off "Continue Existing Batch"
+    registerBatchDay(S.batchBase, {
+      product: S.product,
+      batchLastDay: S.batchDay,
+      batchLastDate: S.date,
+      roundIdx: S.currentRound,
+      roundResumeIdx: procCount,
+      roundDayStartIdx: S.reportedThroughIdx,
+      roundLastDate: S.date,
+      roundComplete: true
+    });
   }
   S.screen = "report"; render();
   submitToSheet(); // fires automatically once the report is finalised — no manual step needed
 }
 
 // Saves progress mid-batch without requiring every process to be finished.
-// Writes a partial row (today's new work only) and marks the batch resumable
-// at exactly this process, so it shows up under "Continue Existing Batch" on Setup.
+// Writes/updates a partial row (today's new work only, for the CURRENT round/shift) and
+// marks that round resumable at exactly this process, so it shows up under
+// "Continue Existing Batch" + that Shift on Setup.
 function pauseBatch() {
   if (!S.batchBase) { alert("No active batch to pause."); return; }
   if (!hasNewProgressToReport()) { alert("Nothing new to save since your last checkpoint."); return; }
-  registerBatchDay(S.batchBase, S.product, S.batchDay, S.date, S.processIdx, false);
+  registerBatchDay(S.batchBase, {
+    product: S.product,
+    batchLastDay: S.batchDay,
+    batchLastDate: S.date,
+    roundIdx: S.currentRound,
+    roundResumeIdx: S.processIdx,
+    roundDayStartIdx: S.reportedThroughIdx,
+    roundLastDate: S.date,
+    roundComplete: false
+  });
   S.screen = "paused"; render();
   submitToSheet();
 }
 
+// Only the CURRENT round's progress matters here — other rounds of the same batch are
+// saved/tracked independently via their own continuations.
 function hasNewProgressToReport() {
   const procs = buildProcesses(S.product);
   const procOrder = {};
@@ -2173,11 +2248,11 @@ function hasNewProgressToReport() {
   const reportedThru = S.reportedThroughIdx || 0;
   const braidProc = procs.find(pr => pr.type === "braiding");
   const braidIdx  = braidProc ? procOrder[braidProc.no] : -1;
-  return S.roundData.some(rd => {
-    const hasEntry = Object.keys(rd.entries).some(k => (procOrder[k.split("_")[0]] ?? 0) >= reportedThru);
-    const hasBraid = braidIdx >= reportedThru && Object.keys(rd.braiding).length > 0;
-    return hasEntry || hasBraid;
-  });
+  const rd = S.roundData[S.currentRound];
+  if (!rd) return false;
+  const hasEntry = Object.keys(rd.entries).some(k => (procOrder[k.split("_")[0]] ?? 0) >= reportedThru);
+  const hasBraid = braidIdx >= reportedThru && Object.keys(rd.braiding).length > 0;
+  return hasEntry || hasBraid;
 }
 
 // ═══════════════════════════════════════════════
@@ -2190,15 +2265,58 @@ const SHEET_HEADERS = [
   "Length","Wire Cut","Appearance (P090)",
   "O.D. Photo","I.D. Photo","Pressure Photo (P050)","Length Photo (P090)",
   "Crimp O.D. Photo (P120)","Pressure Testing Photo (P120)","Fitting Load Test Photo (P120)","Air Leakage Photo (P120)",
-  "Braiding Photos","Supervisor","Finalised At","Crimp O.D. Measured (P120)","Batch No."
+  "Braiding Photos","Supervisor","Finalised At","Crimp O.D. Measured (P120)","Batch No.",
+  "Verified By","Verified At"
 ];
+// Number of DATA columns the operator's own writes ever touch (through "Batch No.").
+// "Verified By"/"Verified At" are appended afterward and are only ever written by the
+// separate, cross-device Verify Reports flow — kept out of this range so the two sides
+// can never overwrite each other. A1=col1 ... "Batch No." is the 43rd column = AQ.
+const SHEET_DATA_COLS = 43;
+function colLetter(n) { // 1-indexed column number -> spreadsheet letter(s)
+  let s = "";
+  while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); }
+  return s;
+}
 
+// Local/export snapshot — shows the FULL current picture across all rounds, unwindowed.
+// Used only by exportToLog(); the actual Sheet submission uses buildSheetRow() below.
 function buildSheetRows() {
   const p = PRODUCTS[S.product];
   if (!p) return [];
-  // For a multi-day batch, each day's row should only show work NEW since the last
-  // save (pause or finalise) — anything already reported in an earlier day's row is
-  // blanked out here, even though it's still kept in memory for completion checks.
+  return S.roundData.map((rd, i) => {
+    if (!rd || !Object.keys(rd.entries).length) return null;
+    const g = (no, key) => rd.entries[pkey(no, key)] || {};
+    const brCols = Array.from({length:18}, (_, bi) => {
+      const m = `BR-${String(bi+1).padStart(2,"0")}`;
+      return (rd.braiding[m] && rd.braiding[m].label) || "";
+    });
+    const braidPhotos = Object.keys(rd.braiding)
+      .filter(m => rd.braiding[m] && rd.braiding[m].photo)
+      .map(m => `${m}: ${rd.braiding[m].photo}`)
+      .join("; ");
+    return [
+      S.date, p.label, ROUND_LABELS[i], S.procOperators["040"] || S.operator,
+      p.extruder.od, g("040","O.D.").label || "",
+      p.extruder.id, g("040","I.D.").label || "",
+      g("040","Appearance").label || "",
+      ...brCols,
+      g("090","Length").label || "", g("090","Wire Cut").label || "", g("090","Appearance").label || "",
+      g("040","O.D.").photo || "", g("040","I.D.").photo || "", g("050","Pressure").photo || "", g("090","Length").photo || "",
+      g("120","Crimp O.D.").photo || "", g("120","Pressure Testing").photo || "", g("120","Fitting Load Test").photo || "", g("120","Air Leakage").photo || "",
+      braidPhotos, S.supName, S.finalisedAt, g("120","Crimp O.D.").label || "", S.batchNo || ""
+    ];
+  }).filter(Boolean);
+}
+
+// Sheet-submission row — CURRENT round only, windowed to just what's new since the last
+// save (pause or finalise) for this round, so a same-day update never re-writes stale data.
+function buildSheetRow() {
+  const p = PRODUCTS[S.product];
+  if (!p) return null;
+  const rd = S.roundData[S.currentRound];
+  if (!rd || !Object.keys(rd.entries).length) return null;
+
   const procs = buildProcesses(S.product);
   const procOrder = {};
   procs.forEach((pr, i) => { procOrder[pr.no] = i; });
@@ -2207,71 +2325,90 @@ function buildSheetRows() {
   const braidIdx  = braidProc ? procOrder[braidProc.no] : -1;
   const braidWindowedOut = braidIdx >= 0 && braidIdx < reportedThru;
 
-  return S.roundData.map((rd, i) => {
-    if (!rd || !Object.keys(rd.entries).length) return null;
-    const g = (no, key) => {
-      if ((procOrder[no] ?? 0) < reportedThru) return {};
-      return rd.entries[pkey(no, key)] || {};
-    };
-    const brCols = Array.from({length:18}, (_, bi) => {
-      if (braidWindowedOut) return "";
-      const m = `BR-${String(bi+1).padStart(2,"0")}`;
-      return (rd.braiding[m] && rd.braiding[m].label) || "";
-    });
-    const braidPhotos = braidWindowedOut ? "" : Object.keys(rd.braiding)
-      .filter(m => rd.braiding[m] && rd.braiding[m].photo)
-      .map(m => `${m}: ${rd.braiding[m].photo}`)
-      .join("; ");
-    return [
-      S.date,
-      p.label,
-      ROUND_LABELS[i],
-      S.procOperators["040"] || S.operator,
-      p.extruder.od,
-      g("040","O.D.").label || "",
-      p.extruder.id,
-      g("040","I.D.").label || "",
-      g("040","Appearance").label || "",
-      ...brCols,
-      g("090","Length").label || "",
-      g("090","Wire Cut").label || "",
-      g("090","Appearance").label || "",
-      g("040","O.D.").photo || "",
-      g("040","I.D.").photo || "",
-      g("050","Pressure").photo || "",
-      g("090","Length").photo || "",
-      g("120","Crimp O.D.").photo || "",
-      g("120","Pressure Testing").photo || "",
-      g("120","Fitting Load Test").photo || "",
-      g("120","Air Leakage").photo || "",
-      braidPhotos,
-      S.supName,
-      S.finalisedAt,
-      g("120","Crimp O.D.").label || "",
-      S.batchNo || ""
-    ];
-  }).filter(Boolean);
+  const g = (no, key) => {
+    if ((procOrder[no] ?? 0) < reportedThru) return {};
+    return rd.entries[pkey(no, key)] || {};
+  };
+  const brCols = Array.from({length:18}, (_, bi) => {
+    if (braidWindowedOut) return "";
+    const m = `BR-${String(bi+1).padStart(2,"0")}`;
+    return (rd.braiding[m] && rd.braiding[m].label) || "";
+  });
+  const braidPhotos = braidWindowedOut ? "" : Object.keys(rd.braiding)
+    .filter(m => rd.braiding[m] && rd.braiding[m].photo)
+    .map(m => `${m}: ${rd.braiding[m].photo}`)
+    .join("; ");
+
+  return [
+    S.date, p.label, ROUND_LABELS[S.currentRound], S.procOperators["040"] || S.operator,
+    p.extruder.od, g("040","O.D.").label || "",
+    p.extruder.id, g("040","I.D.").label || "",
+    g("040","Appearance").label || "",
+    ...brCols,
+    g("090","Length").label || "", g("090","Wire Cut").label || "", g("090","Appearance").label || "",
+    g("040","O.D.").photo || "", g("040","I.D.").photo || "", g("050","Pressure").photo || "", g("090","Length").photo || "",
+    g("120","Crimp O.D.").photo || "", g("120","Pressure Testing").photo || "", g("120","Fitting Load Test").photo || "", g("120","Air Leakage").photo || "",
+    braidPhotos, S.supName, S.finalisedAt, g("120","Crimp O.D.").label || "", S.batchNo || ""
+  ];
 }
 
+// Same-day upsert: the FIRST save of a given calendar day for this round appends a fresh
+// row (and remembers its row number); any LATER save on that SAME calendar date updates
+// that exact row in place instead of appending another one. A genuinely new calendar
+// date (continuing tomorrow, etc.) always appends a fresh row via continueBatch().
 async function submitToSheet(isRetry) {
-  // Fires automatically on finalise (and on resume, if it never succeeded).
-  // On failure, silently retries once after a short delay before surfacing an error —
-  // this rides out brief factory WiFi hiccups without bothering anyone.
   if (!isRetry) { S.submitStatus = "loading"; S.submitError = ""; render(); }
   try {
-    const rows = buildSheetRows();
-    if (!rows.length) throw new Error("No rounds have data to submit.");
-    const res = await fetch("/api/submit", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rows })
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      const msg = (data && data.error && (data.error.error?.message || data.error)) || "Submit failed";
-      throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+    const row = buildSheetRow();
+    if (!row) throw new Error("No data to submit for this round yet.");
+
+    let rowNum = S.dayRowNum || null;
+    let data;
+    if (rowNum) {
+      const range = `A${rowNum}:${colLetter(SHEET_DATA_COLS)}${rowNum}`;
+      const res = await fetch("/api/submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "update", range, rows: [row] })
+      });
+      data = await res.json();
+      if (!res.ok) {
+        const msg = (data && data.error && (data.error.error?.message || data.error)) || "Submit failed";
+        throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+      }
+    } else {
+      const res = await fetch("/api/submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows: [row] })
+      });
+      data = await res.json();
+      if (!res.ok) {
+        const msg = (data && data.error && (data.error.error?.message || data.error)) || "Submit failed";
+        throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+      }
+      const updatedRange = data.result && data.result.updatedRange;
+      const m = updatedRange && updatedRange.match(/![A-Z]+(\d+)/);
+      if (m) { rowNum = parseInt(m[1], 10); S.dayRowNum = rowNum; }
     }
-    S.reportedThroughIdx = S.processIdx; // mark everything up to here as now reported to the Sheet
+
+    // Persist the row number + resume point into the registry for this round so a later
+    // same-day save (or a same-day re-open) can find and update the same row.
+    if (S.batchBase && rowNum) {
+      registerBatchDay(S.batchBase, {
+        product: S.product,
+        batchLastDay: S.batchDay,
+        batchLastDate: S.date,
+        roundIdx: S.currentRound,
+        roundRowNum: rowNum,
+        roundLastDate: S.date
+      });
+    }
+
+    // NOTE: reportedThroughIdx is deliberately NOT advanced here — it represents "start of
+    // today" for this round and must stay fixed across multiple same-day saves, since each
+    // save now UPDATES the same row (a full snapshot of today's work), not just an increment.
+    // It only moves forward when a genuinely new calendar day begins (see continueBatch()).
     S.submitStatus = "done";
     render();
   } catch (err) {
@@ -2420,7 +2557,7 @@ function newInspection() {
         roundData:ROUND_LABELS.map(() => emptyRound()),
         activeBraid:null, supName:"", verified:{}, finalisedAt:"",
         submitStatus:"", submitError:"",
-        batchBase:"", batchNo:"", batchDay:1, reportedThroughIdx:0,
+        batchBase:"", batchNo:"", batchDay:1, reportedThroughIdx:0, dayRowNum:null,
         logFilters:{date:"",product:"",search:""}, logResults:null, logLoading:false, logError:"" };
   render();
 }
@@ -2561,6 +2698,136 @@ async function runLogSearch() {
 }
 
 function esc(s) { return (s||"").replace(/\\/g,"\\\\").replace(/'/g,"\\'"); }
+
+// ═══════════════════════════════════════════════
+// VERIFY REPORTS — separate, PIN-gated, cross-device sign-off
+// The preparer of a report must not be the one who verifies it. This flow works purely
+// against the Google Sheet (via /api/log and /api/submit) so it works fine even when the
+// verifier is on a completely different device than the operator who did the inspection.
+// It writes ONLY to the "Verified By"/"Verified At" columns (appended after all data
+// columns), so it can never collide with an operator's own in-progress row updates.
+// ═══════════════════════════════════════════════
+const VERIFY_PIN = "5709";
+
+function openVerifyReports() {
+  S.vrPin = ""; S.vrName = ""; S.vrRows = null; S.vrLoading = false; S.vrError = "";
+  S.screen = "vrpin"; render();
+}
+
+function rVrPin() {
+  return `
+    <div class="header"><h1>🔒 Verify Reports</h1><p>Enter PIN to continue</p></div>
+    <div class="card">
+      <label>PIN</label>
+      <input type="password" inputmode="numeric" id="vr-pin" value="${S.vrPin||""}"
+        onkeydown="if(event.key==='Enter')checkVrPin()" placeholder="••••">
+      <button class="btn-primary" onclick="checkVrPin()">Continue →</button>
+      <button class="btn-outline" onclick="S.screen='setup';render()">← Back to Home</button>
+    </div>`;
+}
+function checkVrPin() {
+  const pin = document.getElementById("vr-pin").value;
+  if (pin !== VERIFY_PIN) { alert("Incorrect PIN."); return; }
+  S.screen = "vrname"; render();
+}
+
+function rVrName() {
+  const opts = SUPERVISORS.map(s => `<option value="${s}">${s}</option>`).join("");
+  return `
+    <div class="header"><h1>🔒 Verify Reports</h1><p>Who is verifying?</p></div>
+    <div class="card">
+      <label>Your Name</label>
+      <select id="vr-name"><option value="">— Select name —</option>${opts}</select>
+      <button class="btn-primary" onclick="chooseVrName()">Continue →</button>
+      <button class="btn-outline" onclick="S.screen='vrpin';render()">← Back</button>
+    </div>`;
+}
+function chooseVrName() {
+  const name = document.getElementById("vr-name").value;
+  if (!name) { alert("Please select your name."); return; }
+  S.vrName = name;
+  loadVrList();
+}
+
+async function loadVrList() {
+  S.vrLoading = true; S.vrError = ""; render();
+  try {
+    const res = await fetch("/api/log");
+    const data = await res.json();
+    if (!res.ok) {
+      const msg = (data && data.error && (data.error.error?.message || data.error)) || "Search failed";
+      throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+    }
+    // Only rows that are missing a "Verified By" are actionable here — a row can be
+    // partially through inspection (paused mid-batch) and still show up; verifying it
+    // just signs off on whatever was saved so far, it doesn't block the rest being added.
+    S.vrRows = (data.rows || []).filter(r => !r["Verified By"]);
+  } catch (err) {
+    S.vrError = err.message;
+  }
+  S.vrLoading = false;
+  S.screen = "vrlist"; render();
+}
+
+function rVrList() {
+  let bodyHtml;
+  if (S.vrLoading) {
+    bodyHtml = `<div style="text-align:center;padding:24px;color:#64748b;font-size:13px;">Loading…</div>`;
+  } else if (S.vrError) {
+    bodyHtml = `<div class="alert">⚠ ${esc(S.vrError)}</div>`;
+  } else if (!S.vrRows || !S.vrRows.length) {
+    bodyHtml = `<div style="text-align:center;padding:24px;color:#94a3b8;font-size:13px;">Nothing waiting on verification 🎉</div>`;
+  } else {
+    bodyHtml = S.vrRows.map(r => {
+      const isOwn = r.Operator && r.Operator === S.vrName;
+      return `<div class="ver-row">
+        <div class="ver-info">
+          <div class="sum-proc">${esc(r["Batch No."] || "—")} · ${esc(r.Product||"")}</div>
+          <div class="sum-char">${esc(r.Date||"")} · ${esc(r["Shift / Sample"]||"")}</div>
+          <div class="sum-obs">Prepared by ${esc(r.Operator||"—")}${r["Finalised At"] ? "" : " · not yet finalised"}</div>
+        </div>
+        <button class="ver-btn" ${isOwn?"disabled":""} onclick="verifyVrRow(${r.__row}, '${esc(r.Operator||"")}')">
+          ${isOwn ? "Own work" : "Verify"}
+        </button>
+      </div>`;
+    }).join("");
+  }
+  return `
+    <div class="header"><h1>🔒 Verify Reports</h1><p>Signed in as ${esc(S.vrName)}</p></div>
+    <div class="card">
+      <button class="btn-outline" style="margin-bottom:10px;" onclick="loadVrList()">↻ Refresh</button>
+      ${bodyHtml}
+    </div>
+    <button class="btn-outline" onclick="S.screen='setup';render()">← Back to Home</button>`;
+}
+
+async function verifyVrRow(rowNum, operatorName) {
+  if (operatorName && operatorName === S.vrName) {
+    alert("You prepared this report — someone else needs to verify it.");
+    return;
+  }
+  if (!confirm(`Mark row ${rowNum} as verified by ${S.vrName}?`)) return;
+  try {
+    const startCol = colLetter(SHEET_DATA_COLS + 1); // "Verified By"
+    const endCol   = colLetter(SHEET_DATA_COLS + 2); // "Verified At"
+    const range = `${startCol}${rowNum}:${endCol}${rowNum}`;
+    const verifiedAt = new Date().toLocaleString("en-IN");
+    const res = await fetch("/api/submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "update", range, rows: [[S.vrName, verifiedAt]] })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const msg = (data && data.error && (data.error.error?.message || data.error)) || "Verify failed";
+      throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+    }
+    S.vrRows = (S.vrRows || []).filter(r => r.__row !== rowNum);
+    render();
+  } catch (err) {
+    alert("Couldn't save verification: " + err.message);
+  }
+}
 
 // ═══════════════════════════════════════════════
 // RESUME PROMPT (shown once at boot if unfinished work is found)
