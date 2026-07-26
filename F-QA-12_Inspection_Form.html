@@ -88,9 +88,11 @@ select:focus, input[type="date"]:focus { border-color: #2563eb; }
 .band-btn.b-pass-opt { border-color: #bbf7d0; color: #15803d; }
 .band-btn.b-fail-opt { border-color: #fecaca; color: #dc2626; }
 .band-btn.b-na-opt   { border-color: #e2e8f0; color: #64748b; background: #f8fafc; }
+.band-btn.b-norun-opt { border-color: #facc15; color: #854d0e; background: #fefce8; }
 .band-btn.b-pass-on  { background: #16a34a; border-color: #15803d; color: white; }
 .band-btn.b-fail-on  { background: #ef4444; border-color: #dc2626; color: white; }
 .band-btn.b-na-on    { background: #64748b; border-color: #475569; color: white; }
+.band-btn.b-norun-on { background: #eab308; border-color: #ca8a04; color: white; }
 
 /* ── WIRE BRAIDING ── */
 .braid-info { background: #f8fafc; border-radius: 10px; padding: 12px; margin-bottom: 12px; font-size: 13px; color: #475569; line-height: 1.7; }
@@ -1929,6 +1931,11 @@ function rChecks(proc) {
         </div>`;
 
     } else if (c.type === "bands") {
+      // No Run is only offered when continuing an existing batch on a later day — same
+      // rule as the process-level "Mark whole process No Run" button — so a brand-new
+      // day-1 batch can't skip a reading that was never actually taken.
+      const canNoRunCheck = S.batchDay > 1;
+      const noRunSel = e?.result === "NO_RUN";
       body = `
         <div class="bands-label">Select the measured value:</div>
         <div class="bands-row">
@@ -1940,6 +1947,8 @@ function rChecks(proc) {
             return `<button class="band-btn ${on}"
                       onclick="recordBand('${key}','${b.r}','${esc(b.label)}')">${b.label}</button>`;
           }).join("")}
+          ${canNoRunCheck ? `<button class="band-btn ${noRunSel?"b-norun-on":"b-norun-opt"}"
+                      onclick="recordBand('${key}','NO_RUN','No Run')">⊘ No Run</button>` : ""}
         </div>`;
     }
 
