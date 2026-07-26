@@ -1220,6 +1220,11 @@ const PRODUCTS = {
 
 const OPERATORS   = ["Alam","Amar","Amit","Anish","Anita","Ankit","Chintu","Devender","Dinesh","Durga Prasad","Geeta","Gurdeep","Jinku","Kailsah","Mangal","Rajesh","Rakesh","Sahil","Sailesh","Sulekha","Pooja","Rajender","Choote Chowdhary","Kiran Bharai","Other"];
 const SUPERVISORS = ["Saksham","QA Manager","Shift Supervisor","Other"];
+// The 4 people who actually carry a device (or log into one) — distinct from OPERATORS
+// (the full shop-floor worker list used per-process) and SUPERVISORS. Used for Setup's
+// "Prepared By" and Verify Reports' "Who is verifying?", both gated by a personal PIN —
+// see DEVICE IDENTIFICATION below.
+const DEVICE_USERS = ["Rishab (Admin)","Pooja","Gurdeep","Rakesh"];
 
 // ═══════════════════════════════════════════════
 // PROCESS LIBRARY
@@ -1609,26 +1614,71 @@ function registerBatchDay(base, opts) {
 
 // ═══════════════════════════════════════════════
 // DEVICE IDENTIFICATION
-// A short, persistent per-browser ID so submitted/verified rows can be traced back to
-// which device did the work (e.g. telling the shop-floor tablet apart from someone's
-// phone when auditing a batch). Generated once per browser and reused forever after —
-// no naming step, nothing for an operator to set up or get wrong. Written to the Sheet
-// as its own isolated column (see submitToSheet()/verifyVrRow()), never as part of the
-// main 43-column data write, so it can never disturb existing row alignment.
+// Which of the 4 DEVICE_USERS is submitting/verifying is tracked so rows can be traced
+// back to a person, not a browser. Each person has their OWN PIN, stored in a small
+// "PINs" tab in the Sheet (Name | PIN) — not localStorage — so it follows them to
+// whichever device they pick up, rather than being tied to one browser. First use for a
+// name self-sets its PIN (typed twice, to catch typos becoming a permanent lockout);
+// every use after that must match. This is a mistake-guard, not real security: the
+// backend has no server-side auth at all, so a PIN here only stops someone accidentally
+// selecting the wrong person's name, same as it would on a shared shop-floor tablet.
+// Setup remembers the last-used name per browser (see LAST_DEVICE_USER_KEY) purely as a
+// convenience pre-fill; the PIN must still be entered every time regardless.
 // ═══════════════════════════════════════════════
-const DEVICE_ID_KEY = "fqa12_device_id_v1";
-function getDeviceId() {
+const PINS_TAB = "PINs";
+const LAST_DEVICE_USER_KEY = "fqa12_last_device_user_v1";
+
+async function fetchDevicePins() {
+  const res = await fetch(`/api/log?sheet=${encodeURIComponent(PINS_TAB)}`, { cache: "no-store" });
+  const data = await res.json();
+  if (!res.ok) throw new Error((data && data.error && (data.error.error?.message || data.error)) || "Couldn't reach the PIN list.");
+  return data.rows || [];
+}
+
+// Returns true once `name` is confirmed as whoever is actually using this device right
+// now — either by matching their existing PIN, or, the first time a name has no PIN on
+// record yet, by self-setting one (re-entered once to confirm). Shows its own alerts on
+// failure, so callers just need to check the boolean.
+async function verifyDevicePin(name, enteredPin) {
+  let rows;
   try {
-    let id = localStorage.getItem(DEVICE_ID_KEY);
-    if (!id) {
-      const rand = (window.crypto && crypto.randomUUID) ? crypto.randomUUID().replace(/-/g, "") : (Math.random().toString(16).slice(2) + Date.now().toString(16));
-      id = "DEV-" + rand.slice(0, 8).toUpperCase();
-      localStorage.setItem(DEVICE_ID_KEY, id);
-    }
-    return id;
-  } catch (e) {
-    return "DEV-UNKNOWN"; // storage unavailable — still submit, just untraceable
+    rows = await fetchDevicePins();
+  } catch (err) {
+    alert("Couldn't check your PIN right now: " + err.message + " — try again.");
+    return false;
   }
+  const row = rows.find(r => r.Name === name);
+  if (!row) {
+    alert(`"${name}" isn't set up in the PINs list yet — ask an admin to add it.`);
+    return false;
+  }
+  const stored = (row.PIN || "").trim();
+  if (!stored) {
+    const confirmPin = prompt(`No PIN set for ${name} yet on this list. Re-enter your new PIN to confirm it:`);
+    if (confirmPin === null) return false; // cancelled
+    if (confirmPin.trim() !== enteredPin.trim()) {
+      alert("PINs didn't match — try again.");
+      return false;
+    }
+    try {
+      const res = await fetch("/api/submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "update", range: `${PINS_TAB}!B${row.__row}:B${row.__row}`, rows: [[enteredPin.trim()]] })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error((data && data.error && (data.error.error?.message || data.error)) || "Couldn't save your PIN.");
+    } catch (err) {
+      alert("Couldn't save your PIN: " + err.message + " — try again.");
+      return false;
+    }
+    return true;
+  }
+  if (stored !== enteredPin.trim()) {
+    alert(`Incorrect PIN for ${name}.`);
+    return false;
+  }
+  return true;
 }
 
 // ═══════════════════════════════════════════════
@@ -1851,7 +1901,14 @@ function rSetup() {
 
   const pOpts = Object.keys(PRODUCTS).map(k =>
     `<option value="${k}" ${S.product===k?"selected":""}>${PRODUCTS[k].label} — ${PRODUCTS[k].desc}</option>`).join("");
-  const oOpts = OPERATORS.map(o =>
+
+  // Pre-fill "Prepared By" with whoever last confirmed a PIN on this browser — pure
+  // convenience, the PIN is still required every time (see verifyDevicePin()).
+  if (!S.operator) {
+    const last = (() => { try { return localStorage.getItem(LAST_DEVICE_USER_KEY); } catch (e) { return null; } })();
+    if (last && DEVICE_USERS.includes(last)) S.operator = last;
+  }
+  const duOpts = DEVICE_USERS.map(o =>
     `<option value="${o}" ${S.operator===o?"selected":""}>${o}</option>`).join("");
 
   const batchPreview = (S.product && S.date) ? genBatchBase(S.date, PRODUCTS[S.product].label) : "";
@@ -1894,9 +1951,13 @@ function rSetup() {
         }).join("")}
       </div>
       ${shiftLocked ? `<div style="font-size:12px;color:#c2410c;margin-top:6px;">🔒 Approval Sample must be completed for this batch before other shifts unlock.</div>` : ""}
-      <label>Prepared By</label>
-      <select id="s-op" onchange="S.operator=this.value"><option value="">— Select operator —</option>${oOpts}</select>
-      <button class="btn-primary" onclick="startInspection()">Begin Inspection →</button>
+      <label>Prepared By (Device ID)</label>
+      <select id="s-op" onchange="S.operator=this.value;render()"><option value="">— Select —</option>${duOpts}</select>
+      <label>PIN</label>
+      <input type="password" inputmode="numeric" id="s-pin" placeholder="Your PIN"
+        style="width:100%;padding:13px 14px;border:2px solid #e2e8f0;border-radius:10px;font-size:15px;outline:none;">
+      <div style="font-size:11px;color:#94a3b8;margin-top:4px;">First time on any device? Type a new PIN — you'll confirm it once.</div>
+      <button class="btn-primary" onclick="beginInspectionClicked()">Begin Inspection →</button>
       <button class="btn-outline" onclick="S.screen='log';render()">📊 View Inspection Log</button>
       <button class="btn-outline" style="background:#faf5ff;color:#7e22ce;border-color:#9333ea;" onclick="openVerifyReports()">🔒 Verify Reports</button>
     </div>
@@ -1906,13 +1967,35 @@ function rSetup() {
         <div style="font-weight:700;font-size:15px;">↻ Continue Existing Batch</div>
         <span style="font-size:11px;color:#94a3b8;cursor:pointer;" onclick="refreshSheetBatches()">${S.sheetBatchRegLoading ? "⏳ syncing…" : "↻ refresh"}</span>
       </div>
-      <div style="font-size:12px;color:#64748b;margin-bottom:10px;">Pick a batch worked on a previous day, then select Prepared By and Shift above before continuing. This list includes batches worked on any device.</div>
+      <div style="font-size:12px;color:#64748b;margin-bottom:10px;">Pick a batch worked on a previous day, then select Prepared By, PIN, and Shift above before continuing. This list includes batches worked on any device.</div>
       ${S.sheetBatchRegError ? `<div class="alert" style="font-size:12px;">⚠ Couldn't sync with the Sheet: ${esc(S.sheetBatchRegError)} — showing only what's known on this device. <span style="text-decoration:underline;cursor:pointer;" onclick="refreshSheetBatches()">Retry</span></div>` : ""}
       <label style="margin-top:0;">Batch Number</label>
       <select id="s-batch"><option value="">— Select batch —</option>${contOpts}</select>
-      <button class="btn-outline" style="background:#fff7ed;color:#c2410c;border-color:#f97316;" onclick="continueBatch()">↻ Continue This Batch →</button>
+      <button class="btn-outline" style="background:#fff7ed;color:#c2410c;border-color:#f97316;" onclick="continueBatchClicked()">↻ Continue This Batch →</button>
     </div>` : (S.sheetBatchRegLoading ? `<div style="text-align:center;font-size:12px;color:#94a3b8;margin-top:4px;">Checking for batches from other devices…</div>` : "")}
     <div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:4px;">F-QA-12 Rev.01 · Eff. 01.04.19</div>`;
+}
+
+// Buttons call these instead of startInspection()/continueBatch() directly — PIN check
+// happens first, and only on success do we fall through to the real flow. Kept as thin
+// wrappers so startInspection()/continueBatch() themselves stay synchronous and unchanged.
+async function beginInspectionClicked() {
+  const name = document.getElementById("s-op").value;
+  const pin  = document.getElementById("s-pin").value;
+  if (!name) { alert("Please select who's using this device (Prepared By)."); return; }
+  if (!pin)  { alert("Please enter your PIN."); return; }
+  if (!(await verifyDevicePin(name, pin))) return;
+  try { localStorage.setItem(LAST_DEVICE_USER_KEY, name); } catch (e) {}
+  startInspection();
+}
+async function continueBatchClicked() {
+  const name = document.getElementById("s-op").value;
+  const pin  = document.getElementById("s-pin").value;
+  if (!name) { alert("Please select who's using this device (Prepared By)."); return; }
+  if (!pin)  { alert("Please enter your PIN."); return; }
+  if (!(await verifyDevicePin(name, pin))) return;
+  try { localStorage.setItem(LAST_DEVICE_USER_KEY, name); } catch (e) {}
+  continueBatch();
 }
 
 function startInspection() {
@@ -2540,7 +2623,7 @@ const SHEET_HEADERS = [
 // separate, cross-device Verify Reports flow — kept out of this range so the two sides
 // can never overwrite each other. A1=col1 ... "Batch No." is the 43rd column = AQ.
 // Columns 46/47 ("Device ID"/"Verified Device ID") follow the same isolation pattern —
-// each is its own single-cell write (see getDeviceId(), submitToSheet(), verifyVrRow()),
+// each is its own single-cell write (see verifyDevicePin(), submitToSheet(), verifyVrRow()),
 // so neither can collide with the main data write or with each other.
 const SHEET_DATA_COLS = 43;
 function colLetter(n) { // 1-indexed column number -> spreadsheet letter(s)
@@ -2711,7 +2794,7 @@ async function submitToSheet(isRetry) {
       fetch("/api/submit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "update", range: `${deviceCol}${rowNum}:${deviceCol}${rowNum}`, rows: [[getDeviceId()]] })
+        body: JSON.stringify({ mode: "update", range: `${deviceCol}${rowNum}:${deviceCol}${rowNum}`, rows: [[S.operator || ""]] })
       }).catch(() => {});
     }
 
@@ -3048,19 +3131,26 @@ function checkVrPin() {
 }
 
 function rVrName() {
-  const opts = SUPERVISORS.map(s => `<option value="${s}">${s}</option>`).join("");
+  const opts = DEVICE_USERS.map(s => `<option value="${s}">${s}</option>`).join("");
   return `
     <div class="header"><h1>🔒 Verify Reports</h1><p>Who is verifying?</p></div>
     <div class="card">
       <label>Your Name</label>
       <select id="vr-name"><option value="">— Select name —</option>${opts}</select>
+      <label>PIN</label>
+      <input type="password" inputmode="numeric" id="vr-name-pin" placeholder="Your PIN"
+        onkeydown="if(event.key==='Enter')chooseVrName()"
+        style="width:100%;padding:13px 14px;border:2px solid #e2e8f0;border-radius:10px;font-size:15px;outline:none;">
       <button class="btn-primary" onclick="chooseVrName()">Continue →</button>
       <button class="btn-outline" onclick="S.screen='vrpin';render()">← Back</button>
     </div>`;
 }
-function chooseVrName() {
+async function chooseVrName() {
   const name = document.getElementById("vr-name").value;
+  const pin  = document.getElementById("vr-name-pin").value;
   if (!name) { alert("Please select your name."); return; }
+  if (!pin)  { alert("Please enter your PIN."); return; }
+  if (!(await verifyDevicePin(name, pin))) return;
   S.vrName = name;
   loadVrList();
 }
@@ -3260,7 +3350,7 @@ async function verifyVrRow(rowNum, operatorName) {
     fetch("/api/submit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "update", range: `${verifierDeviceCol}${rowNum}:${verifierDeviceCol}${rowNum}`, rows: [[getDeviceId()]] })
+      body: JSON.stringify({ mode: "update", range: `${verifierDeviceCol}${rowNum}:${verifierDeviceCol}${rowNum}`, rows: [[S.vrName || ""]] })
     }).catch(() => {});
   } catch (err) {
     alert("Couldn't save verification: " + err.message);
