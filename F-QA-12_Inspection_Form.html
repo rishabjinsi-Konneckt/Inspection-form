@@ -2065,7 +2065,64 @@ function recordSub(key, range) {
   curEntries()[key] = { result:"PASS", label:range, time: nowTime() }; render();
 }
 function recordBand(key, result, label) {
-  curEntries()[key] = { result, label, time: nowTime() }; render();
+  curEntries()[key] = { result, label, time: nowTime() };
+  if (key === pkey("090","Length")) {
+    if (result === "NO_RUN") applyLengthNoRunCascade();
+    else revertLengthNoRunCascade();
+  }
+  render();
+}
+
+// If Part Off (090) Length is No Run, the hose was never cut this round, which means
+// nothing downstream of it — the rest of 090, and all of 100/120/130 — could have
+// happened either. This fills all of that in as No Run too and jumps straight to Review,
+// same "end of form" checkpoint as finishing every process normally would reach.
+// Entries are tagged {auto:true} so revertLengthNoRunCascade() can safely undo exactly
+// what it applied without ever touching anything the operator entered by hand.
+function applyLengthNoRunCascade() {
+  const procs   = buildProcesses(S.product);
+  const idx090  = procs.findIndex(p => p.no === "090");
+  const entries = curEntries();
+  procs.slice(idx090).forEach(p => {
+    if (p.type === "braiding") {
+      const n = PRODUCTS[S.product].braiding.machines;
+      const brg = curBraiding();
+      for (let i = 1; i <= n; i++) {
+        const m = `BR-${String(i).padStart(2,"0")}`;
+        if (!brg[m] || brg[m].auto) brg[m] = { result:"NO_RUN", label:"No Run", auto:true };
+      }
+      return;
+    }
+    p.checks.forEach(c => {
+      if (p.no === "090" && c.key === "Length") return; // already set by the caller
+      const k = pkey(p.no, c.key);
+      if (!entries[k] || entries[k].auto) entries[k] = { result:"NO_RUN", label:"No Run", time: nowTime(), auto:true };
+    });
+    if (!S.procOperators[p.no]) S.procOperators[p.no] = S.procOperators["090"] || S.operator;
+  });
+  S.processIdx = procs.length - 1;
+  S.screen = "review";
+}
+
+// Undoes exactly what applyLengthNoRunCascade() auto-filled — only entries still tagged
+// {auto:true} are cleared, so anything the operator has since entered for real (which
+// overwrites the auto tag) is left completely untouched.
+function revertLengthNoRunCascade() {
+  const procs   = buildProcesses(S.product);
+  const idx090  = procs.findIndex(p => p.no === "090");
+  const entries = curEntries();
+  procs.slice(idx090).forEach(p => {
+    if (p.type === "braiding") {
+      const brg = curBraiding();
+      Object.keys(brg).forEach(m => { if (brg[m] && brg[m].auto) delete brg[m]; });
+      return;
+    }
+    p.checks.forEach(c => {
+      if (p.no === "090" && c.key === "Length") return;
+      const k = pkey(p.no, c.key);
+      if (entries[k] && entries[k].auto) delete entries[k];
+    });
+  });
 }
 function recordManual(key) {
   const val = document.getElementById("manual_" + key)?.value?.trim();
@@ -2102,6 +2159,9 @@ function markProcessNoRun() {
       curEntries()[key] = { result:"NO_RUN", label:"No Run", time: nowTime() };
     });
   }
+  // Bulk-marking Part Off (090) No Run this way means the same "nothing downstream
+  // happened either" logic applies as when Length alone is marked No Run.
+  if (proc.no === "090") { applyLengthNoRunCascade(); render(); return; }
   render();
   navNext();
 }
