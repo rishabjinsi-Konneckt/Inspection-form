@@ -2415,6 +2415,30 @@ function buildSheetRow() {
   ];
 }
 
+// A row number cached in S.dayRowNum / the batch registry can go stale if someone deletes
+// or inserts rows directly in the Sheet UI (every row below the edit point shifts). Before
+// trusting a cached row number for an update, re-check it against a fresh read: if the row
+// no longer has this batch's Batch No. + Shift, search for the row that actually does; if no
+// row anywhere still matches, return null so the caller appends a fresh row instead of
+// silently overwriting whatever unrelated data now sits at the stale row number.
+async function locateRow(rowNum, expectBatchNo, expectShift, expectDate) {
+  try {
+    const res = await fetch(`/api/log?date=${encodeURIComponent(expectDate || "")}`, { cache: "no-store" });
+    if (!res.ok) return rowNum || null; // can't verify — fall back to trusting the cached number
+    const data = await res.json();
+    const rows = (data && data.rows) || [];
+    const matches = r => (r["Batch No."] || "") === expectBatchNo && (r["Shift / Sample"] || "") === expectShift;
+    if (rowNum) {
+      const atRow = rows.find(r => r.__row === rowNum);
+      if (atRow && matches(atRow)) return rowNum; // still correct — nothing shifted
+    }
+    const found = rows.find(matches);
+    return found ? found.__row : null;
+  } catch (e) {
+    return rowNum || null; // network hiccup — don't block the save, fall back to old behavior
+  }
+}
+
 // Same-day upsert: the FIRST save of a given calendar day for this round appends a fresh
 // row (and remembers its row number); any LATER save on that SAME calendar date updates
 // that exact row in place instead of appending another one. A genuinely new calendar
@@ -2426,6 +2450,10 @@ async function submitToSheet(isRetry) {
     if (!row) throw new Error("No data to submit for this round yet.");
 
     let rowNum = S.dayRowNum || null;
+    if (rowNum) {
+      const verified = await locateRow(rowNum, S.batchNo, ROUND_LABELS[S.currentRound], S.date);
+      if (verified !== rowNum) { rowNum = verified; S.dayRowNum = rowNum; }
+    }
     let data;
     if (rowNum) {
       const range = `A${rowNum}:${colLetter(SHEET_DATA_COLS)}${rowNum}`;
