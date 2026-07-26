@@ -1530,6 +1530,7 @@ let S = {
   supName:"", verified:{}, finalisedAt:"",
   submitStatus:"", submitError:"",
   batchBase:"", batchNo:"", batchDay:1, reportedThroughIdx:0, dayRowNum:null,
+  sheetBatchReg:null, sheetBatchRegLoading:false, sheetBatchRegError:"",
   logFilters:{date:"",product:"",search:""}, logResults:null, logLoading:false, logError:"",
   vrPin:"", vrName:"", vrRows:null, vrLoading:false, vrError:"", vrDetailRow:null, vrJustVerified:false
 };
@@ -1606,6 +1607,186 @@ function registerBatchDay(base, opts) {
   saveBatchRegistry(reg);
 }
 
+// ═══════════════════════════════════════════════
+// DEVICE IDENTIFICATION
+// A short, persistent per-browser ID so submitted/verified rows can be traced back to
+// which device did the work (e.g. telling the shop-floor tablet apart from someone's
+// phone when auditing a batch). Generated once per browser and reused forever after —
+// no naming step, nothing for an operator to set up or get wrong. Written to the Sheet
+// as its own isolated column (see submitToSheet()/verifyVrRow()), never as part of the
+// main 43-column data write, so it can never disturb existing row alignment.
+// ═══════════════════════════════════════════════
+const DEVICE_ID_KEY = "fqa12_device_id_v1";
+function getDeviceId() {
+  try {
+    let id = localStorage.getItem(DEVICE_ID_KEY);
+    if (!id) {
+      const rand = (window.crypto && crypto.randomUUID) ? crypto.randomUUID().replace(/-/g, "") : (Math.random().toString(16).slice(2) + Date.now().toString(16));
+      id = "DEV-" + rand.slice(0, 8).toUpperCase();
+      localStorage.setItem(DEVICE_ID_KEY, id);
+    }
+    return id;
+  } catch (e) {
+    return "DEV-UNKNOWN"; // storage unavailable — still submit, just untraceable
+  }
+}
+
+// ═══════════════════════════════════════════════
+// CROSS-DEVICE BATCH VISIBILITY
+// localStorage's batch registry only knows about batches THIS browser has touched, so
+// "Continue Existing Batch" showed a different list on every device — the phone only saw
+// what the phone had worked on, the laptop only what the laptop had. The Sheet itself
+// already has every submitted/paused round from every device, so this rebuilds an
+// equivalent registry straight from /api/log and merges it with the local one: the Sheet
+// wins on "does this batch/round exist" and "is it finalised" (that's the actual submitted
+// truth, regardless of device); the local registry wins on "which process to resume at"
+// since that resume point is never written to the Sheet.
+// ═══════════════════════════════════════════════
+function buildSheetBatchRegistry(rows) {
+  const reg = {};
+  (rows || []).forEach(r => {
+    const rawBatch = (r["Batch No."] || "").trim();
+    if (!rawBatch) return;
+    const m = rawBatch.match(/^(.*)-(\d+)$/);
+    const base = m ? m[1] : rawBatch;
+    const day  = m ? parseInt(m[2], 10) : 1;
+    const roundIdx = ROUND_LABELS.indexOf(r["Shift / Sample"]);
+    if (roundIdx < 0) return;
+    const entry = reg[base] || { product: "", lastDay: 0, lastDate: "", rounds: {} };
+    if (day >= entry.lastDay) { entry.lastDay = day; entry.lastDate = r["Date"] || entry.lastDate; entry.product = r["Product"] || entry.product; }
+    if (!entry.rounds[roundIdx]) entry.rounds[roundIdx] = [];
+    entry.rounds[roundIdx].push(r);
+    reg[base] = entry;
+  });
+  // Oldest → newest per round, since a multi-day round gets one Sheet row per day
+  // (buildSheetRow() windows each day's write to just that day's new checks).
+  Object.values(reg).forEach(entry => {
+    Object.values(entry.rounds).forEach(list => list.sort((a, b) => (a.Date || "").localeCompare(b.Date || "")));
+  });
+  return reg;
+}
+
+// Collapses one round's (possibly multi-day) Sheet rows into the same shape the local
+// registry uses, so both can be compared/merged uniformly.
+function sheetRoundSummary(rowsForRound) {
+  if (!rowsForRound || !rowsForRound.length) return null;
+  const last = rowsForRound[rowsForRound.length - 1];
+  return {
+    complete: rowsForRound.some(r => !!r["Finalised At"]),
+    lastDate: last.Date || "",
+    rowNum:   last.__row
+  };
+}
+
+// The very first hit to /api/log after the backend has sat idle can be slow — a cold
+// serverless start plus a fresh Google Sheets auth handshake measured 10s+ in testing,
+// while every call right after returned in well under a second. Without a timeout, a
+// slow/stuck first call left this screen stuck on "syncing…" forever with no visible
+// signal that a retry was needed. 20s comfortably covers a cold start without making
+// operators wait unreasonably long for a genuinely dead endpoint.
+async function refreshSheetBatches() {
+  S.sheetBatchRegLoading = true; S.sheetBatchRegError = ""; render();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  try {
+    const res = await fetch("/api/log", { cache: "no-store", signal: controller.signal });
+    const data = await res.json();
+    if (!res.ok) throw new Error((data && data.error && (data.error.error?.message || data.error)) || "Couldn't load batches");
+    S.sheetBatchReg = buildSheetBatchRegistry(data.rows || []);
+  } catch (err) {
+    S.sheetBatchRegError = err.name === "AbortError"
+      ? "Timed out reaching the Sheet (it may just be waking up) — tap Retry."
+      : (err.message || "Couldn't load batches from the Sheet.");
+  } finally {
+    clearTimeout(timer);
+  }
+  S.sheetBatchRegLoading = false;
+  render();
+}
+
+function mergedBatchRegistry() {
+  const local = loadBatchRegistry();
+  const sheet = S.sheetBatchReg || {};
+  const bases = new Set([...Object.keys(local), ...Object.keys(sheet)]);
+  const merged = {};
+  bases.forEach(base => {
+    const l = local[base];
+    const s = sheet[base];
+    const roundKeys = new Set([
+      ...(l ? Object.keys(l.rounds || {}) : []),
+      ...(s ? Object.keys(s.rounds || {}) : [])
+    ]);
+    const rounds = {};
+    roundKeys.forEach(riStr => {
+      const ri = Number(riStr);
+      const lr = l && l.rounds && l.rounds[ri];
+      const sRows = s && s.rounds && s.rounds[ri];
+      const sSummary = sheetRoundSummary(sRows);
+      rounds[ri] = {
+        resumeIdx:    lr ? (lr.resumeIdx || 0) : 0,
+        dayStartIdx:  lr ? (lr.dayStartIdx || 0) : 0,
+        lastDate:     (sSummary && sSummary.lastDate) || (lr && lr.lastDate) || "",
+        rowNum:       (sSummary && sSummary.rowNum) || (lr && lr.rowNum) || null,
+        complete:     sSummary ? sSummary.complete : !!(lr && lr.complete),
+        knownLocally: !!lr,
+        sheetRows:    sRows || null
+      };
+    });
+    merged[base] = {
+      product:  (s && s.product) || (l && l.product) || "",
+      lastDay:  Math.max((s && s.lastDay) || 0, (l && l.lastDay) || 0),
+      lastDate: (s && s.lastDate) || (l && l.lastDate) || "",
+      rounds
+    };
+  });
+  return merged;
+}
+
+// A round this device has never touched has no local resume point — this rebuilds
+// whatever the Sheet's own summary schema captured for it (see vrSheetValue(), the same
+// mapping the Verify Reports read-through view uses) directly into curEntries()/
+// curBraiding(), tagged {fromSheet:true} for traceability. Checks the Sheet schema never
+// tracks in the first place (most non-headline fields) stay blank regardless of device —
+// that data was simply never sent. Rows are merged oldest → newest so a later day's value
+// wins if a field were ever duplicated across days.
+function hydrateRoundFromSheetRows(roundIdx, rows, productKey) {
+  const rd = S.roundData[roundIdx];
+  const product = PRODUCTS[productKey];
+  const procs = buildProcesses(productKey);
+  rows.forEach(row => {
+    procs.forEach(p => {
+      if (p.type === "braiding") {
+        const n = product.braiding.machines;
+        for (let i = 1; i <= n; i++) {
+          const mKey = `BR-${String(i).padStart(2,"0")}`;
+          const val = row[`${mKey} O.D.`];
+          if (val) rd.braiding[mKey] = { result: inferResultFromLabel(val), label: val === "No Run" ? "No Run" : val, fromSheet: true };
+        }
+        return;
+      }
+      p.checks.forEach(c => {
+        const val = vrSheetValue(row, p.no, c.key);
+        if (val) {
+          const k = pkey(p.no, c.key);
+          rd.entries[k] = { result: inferResultFromLabel(val), label: val === "No Run" ? "" : val, time: row.Date || "", fromSheet: true };
+        }
+      });
+    });
+    if (row.Operator) {
+      procs.forEach(p => { if (!S.procOperators[p.no]) S.procOperators[p.no] = row.Operator; });
+    }
+  });
+}
+
+// Mirrors vrJudge()'s classification of a raw Sheet label so hydrated entries carry a
+// result code consistent with the rest of the app (NO_RUN badges, FAIL counts, etc.).
+function inferResultFromLabel(label) {
+  if (!label) return null;
+  if (label === "No Run") return "NO_RUN";
+  if (/FAIL|✗|Not Smooth/.test(label)) return "FAIL";
+  return "PASS";
+}
+
 function braidStats() {
   const vals = Object.values(curBraiding());
   return {
@@ -1653,7 +1834,7 @@ function render() {
 // that fact AND snaps S.shift back to Approval Sample if it had drifted onto a locked one.
 function enforceShiftGate() {
   const base = (S.product && S.date) ? genBatchBase(S.date, PRODUCTS[S.product].label) : null;
-  const reg  = base ? loadBatchRegistry()[base] : null;
+  const reg  = base ? mergedBatchRegistry()[base] : null;
   const approvalDone = !!(reg && reg.rounds && reg.rounds[0] && reg.rounds[0].complete);
   const locked = !!base && !approvalDone;
   if (locked && ROUND_LABELS.indexOf(S.shift) !== 0) {
@@ -1664,6 +1845,10 @@ function enforceShiftGate() {
 }
 
 function rSetup() {
+  // Sheet-backed batch list is fetched once per app load (and on manual refresh) so
+  // "Continue Existing Batch" shows the same batches regardless of which device is asking.
+  if (S.sheetBatchReg === null && !S.sheetBatchRegLoading && !S.sheetBatchRegError) refreshSheetBatches();
+
   const pOpts = Object.keys(PRODUCTS).map(k =>
     `<option value="${k}" ${S.product===k?"selected":""}>${PRODUCTS[k].label} — ${PRODUCTS[k].desc}</option>`).join("");
   const oOpts = OPERATORS.map(o =>
@@ -1672,7 +1857,7 @@ function rSetup() {
   const batchPreview = (S.product && S.date) ? genBatchBase(S.date, PRODUCTS[S.product].label) : "";
   const shiftLocked = enforceShiftGate();
 
-  const registry  = loadBatchRegistry();
+  const registry  = mergedBatchRegistry();
   const batchKeys = Object.keys(registry);
   const contOpts  = batchKeys.map(b => {
     const rounds = registry[b].rounds || {};
@@ -1717,12 +1902,16 @@ function rSetup() {
     </div>
     ${batchKeys.length ? `
     <div class="card">
-      <div style="font-weight:700;font-size:15px;margin-bottom:8px;">↻ Continue Existing Batch</div>
-      <div style="font-size:12px;color:#64748b;margin-bottom:10px;">Pick a batch worked on a previous day, then select Prepared By and Shift above before continuing.</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <div style="font-weight:700;font-size:15px;">↻ Continue Existing Batch</div>
+        <span style="font-size:11px;color:#94a3b8;cursor:pointer;" onclick="refreshSheetBatches()">${S.sheetBatchRegLoading ? "⏳ syncing…" : "↻ refresh"}</span>
+      </div>
+      <div style="font-size:12px;color:#64748b;margin-bottom:10px;">Pick a batch worked on a previous day, then select Prepared By and Shift above before continuing. This list includes batches worked on any device.</div>
+      ${S.sheetBatchRegError ? `<div class="alert" style="font-size:12px;">⚠ Couldn't sync with the Sheet: ${esc(S.sheetBatchRegError)} — showing only what's known on this device. <span style="text-decoration:underline;cursor:pointer;" onclick="refreshSheetBatches()">Retry</span></div>` : ""}
       <label style="margin-top:0;">Batch Number</label>
       <select id="s-batch"><option value="">— Select batch —</option>${contOpts}</select>
       <button class="btn-outline" style="background:#fff7ed;color:#c2410c;border-color:#f97316;" onclick="continueBatch()">↻ Continue This Batch →</button>
-    </div>` : ""}
+    </div>` : (S.sheetBatchRegLoading ? `<div style="text-align:center;font-size:12px;color:#94a3b8;margin-top:4px;">Checking for batches from other devices…</div>` : "")}
     <div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:4px;">F-QA-12 Rev.01 · Eff. 01.04.19</div>`;
 }
 
@@ -1737,7 +1926,7 @@ function startInspection() {
   // Approval Sample until it's done for this batch — this re-checks the rule authoritatively
   // regardless of UI state, since Approval Sample must come first for every product.
   const gateBase = genBatchBase(S.date, PRODUCTS[S.product].label);
-  const gateInfo = loadBatchRegistry()[gateBase];
+  const gateInfo = mergedBatchRegistry()[gateBase];
   const approvalDone = !!(gateInfo && gateInfo.rounds && gateInfo.rounds[0] && gateInfo.rounds[0].complete);
   if (!approvalDone && ROUND_LABELS.indexOf(S.shift) !== 0) {
     alert("Approval Sample must be completed for this batch before any other shift can be started.");
@@ -1765,7 +1954,7 @@ function continueBatch() {
   if (!base) { alert("Please select a batch to continue."); return; }
   const op = document.getElementById("s-op").value;
   if (!op) { alert("Please select an operator (Prepared By)."); return; }
-  const reg  = loadBatchRegistry();
+  const reg  = mergedBatchRegistry();
   const info = reg[base];
   if (!info) { alert("Batch not found."); return; }
 
@@ -1795,7 +1984,19 @@ function continueBatch() {
   S.batchNo   = S.batchDay <= 1 ? base : `${base}-${S.batchDay}`;
   S.currentRound = roundIdx;
 
-  if (roundInfo) {
+  if (roundInfo && !roundInfo.knownLocally && roundInfo.sheetRows && roundInfo.sheetRows.length) {
+    // This device has never worked on this round — there's no local resume point, but the
+    // Sheet already has whatever was captured for it from wherever it WAS worked on. Rebuild
+    // that into this round's entries and resume right after the last process it covers.
+    hydrateRoundFromSheetRows(roundIdx, roundInfo.sheetRows, info.product);
+    const procs = buildProcesses(info.product);
+    let resumeIdx = procs.findIndex(p => !isProcDone(p));
+    if (resumeIdx < 0) resumeIdx = procs.length - 1;
+    S.processIdx = resumeIdx;
+    S.reportedThroughIdx = resumeIdx;
+    const todaysRow = roundInfo.sheetRows.find(r => r.Date === todayStr);
+    S.dayRowNum = todaysRow ? todaysRow.__row : null;
+  } else if (roundInfo) {
     const roundSameDay = roundInfo.lastDate === todayStr;
     S.processIdx = roundInfo.resumeIdx || 0;
     S.reportedThroughIdx = roundSameDay ? (roundInfo.dayStartIdx || 0) : (roundInfo.resumeIdx || 0);
@@ -2075,8 +2276,11 @@ function recordBand(key, result, label) {
 
 // If Part Off (090) Length is No Run, the hose was never cut this round, which means
 // nothing downstream of it — the rest of 090, and all of 100/120/130 — could have
-// happened either. This fills all of that in as No Run too and jumps straight to Review,
-// same "end of form" checkpoint as finishing every process normally would reach.
+// happened either. This fills all of that in as No Run too and submits straight for
+// verification, skipping the Review screen entirely — there's nothing left for the
+// operator to check by hand, so there's no reason to stop and show them a table first.
+// (If an earlier process, before 090, isn't done yet, submitForVerification() still
+// catches that with its usual alert — same guard as the manual Review flow always had.)
 // Entries are tagged {auto:true} so revertLengthNoRunCascade() can safely undo exactly
 // what it applied without ever touching anything the operator entered by hand.
 function applyLengthNoRunCascade() {
@@ -2101,7 +2305,7 @@ function applyLengthNoRunCascade() {
     if (!S.procOperators[p.no]) S.procOperators[p.no] = S.procOperators["090"] || S.operator;
   });
   S.processIdx = procs.length - 1;
-  S.screen = "review";
+  submitForVerification();
 }
 
 // Undoes exactly what applyLengthNoRunCascade() auto-filled — only entries still tagged
@@ -2329,12 +2533,15 @@ const SHEET_HEADERS = [
   "O.D. Photo","I.D. Photo","Pressure Photo (P050)","Length Photo (P090)",
   "Crimp O.D. Photo (P120)","Pressure Testing Photo (P120)","Fitting Load Test Photo (P120)","Air Leakage Photo (P120)",
   "Braiding Photos","Supervisor","Finalised At","Crimp O.D. Measured (P120)","Batch No.",
-  "Verified By","Verified At"
+  "Verified By","Verified At","Device ID","Verified Device ID"
 ];
 // Number of DATA columns the operator's own writes ever touch (through "Batch No.").
 // "Verified By"/"Verified At" are appended afterward and are only ever written by the
 // separate, cross-device Verify Reports flow — kept out of this range so the two sides
 // can never overwrite each other. A1=col1 ... "Batch No." is the 43rd column = AQ.
+// Columns 46/47 ("Device ID"/"Verified Device ID") follow the same isolation pattern —
+// each is its own single-cell write (see getDeviceId(), submitToSheet(), verifyVrRow()),
+// so neither can collide with the main data write or with each other.
 const SHEET_DATA_COLS = 43;
 function colLetter(n) { // 1-indexed column number -> spreadsheet letter(s)
   let s = "";
@@ -2494,6 +2701,18 @@ async function submitToSheet(isRetry) {
         roundRowNum: rowNum,
         roundLastDate: S.date
       });
+    }
+
+    // Stamp which device made this save — its own isolated single-cell write, appended
+    // after Verified By/At (see DEVICE IDENTIFICATION above), so it can never misalign the
+    // main data columns. Best-effort: a failure here must never block the real submission.
+    if (rowNum) {
+      const deviceCol = colLetter(SHEET_DATA_COLS + 3);
+      fetch("/api/submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "update", range: `${deviceCol}${rowNum}:${deviceCol}${rowNum}`, rows: [[getDeviceId()]] })
+      }).catch(() => {});
     }
 
     // NOTE: reportedThroughIdx is deliberately NOT advanced here — it represents "start of
@@ -2769,12 +2988,16 @@ async function runLogSearch() {
     search: searchEl ? searchEl.value.trim() : S.logFilters.search
   };
   S.logLoading = true; S.logError = ""; render();
+  // Same cold-start exposure noted on refreshSheetBatches()/loadVrList() above — a search
+  // with no filters set hits /api/log bare, so it gets the same bound.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
   try {
     const params = new URLSearchParams();
     if (S.logFilters.date) params.set("date", S.logFilters.date);
     if (S.logFilters.product && PRODUCTS[S.logFilters.product]) params.set("product", PRODUCTS[S.logFilters.product].label);
     if (S.logFilters.search) params.set("search", S.logFilters.search);
-    const res = await fetch(`/api/log?${params.toString()}`);
+    const res = await fetch(`/api/log?${params.toString()}`, { signal: controller.signal });
     const data = await res.json();
     if (!res.ok) {
       const msg = (data && data.error && (data.error.error?.message || data.error)) || "Search failed";
@@ -2782,7 +3005,9 @@ async function runLogSearch() {
     }
     S.logResults = data;
   } catch (err) {
-    S.logError = err.message;
+    S.logError = err.name === "AbortError" ? "Timed out reaching the Sheet (it may just be waking up) — try Search again." : err.message;
+  } finally {
+    clearTimeout(timer);
   }
   S.logLoading = false;
   render();
@@ -2842,8 +3067,13 @@ function chooseVrName() {
 
 async function loadVrList() {
   S.vrLoading = true; S.vrError = ""; render();
+  // Same cold-start exposure as refreshSheetBatches() above — a slow/stuck first call to
+  // /api/log after backend idle time left this stuck on "Loading…" with no way to tell it
+  // needed a retry. Bounded to 20s for the same reason.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
   try {
-    const res = await fetch("/api/log");
+    const res = await fetch("/api/log", { signal: controller.signal });
     const data = await res.json();
     if (!res.ok) {
       const msg = (data && data.error && (data.error.error?.message || data.error)) || "Search failed";
@@ -2854,7 +3084,9 @@ async function loadVrList() {
     // just signs off on whatever was saved so far, it doesn't block the rest being added.
     S.vrRows = (data.rows || []).filter(r => !r["Verified By"]);
   } catch (err) {
-    S.vrError = err.message;
+    S.vrError = err.name === "AbortError" ? "Timed out reaching the Sheet (it may just be waking up) — tap Refresh." : err.message;
+  } finally {
+    clearTimeout(timer);
   }
   S.vrLoading = false;
   S.screen = "vrlist"; render();
@@ -3019,6 +3251,17 @@ async function verifyVrRow(rowNum, operatorName) {
     if (S.vrDetailRow) S.vrDetailRow["Verified At"] = verifiedAt;
     S.vrJustVerified = true;
     render();
+
+    // Stamp which device verified this row — kept in its OWN column (47), never sharing a
+    // range with the operator's Device ID (46) above, so verifying a row can never
+    // overwrite the record of which device originally prepared it. Best-effort, same as
+    // the operator-side stamp: never allowed to fail the actual verification.
+    const verifierDeviceCol = colLetter(SHEET_DATA_COLS + 4);
+    fetch("/api/submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "update", range: `${verifierDeviceCol}${rowNum}:${verifierDeviceCol}${rowNum}`, rows: [[getDeviceId()]] })
+    }).catch(() => {});
   } catch (err) {
     alert("Couldn't save verification: " + err.message);
   }
