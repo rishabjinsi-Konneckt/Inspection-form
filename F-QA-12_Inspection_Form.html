@@ -1756,8 +1756,15 @@ async function refreshSheetBatches() {
 
 function mergedBatchRegistry() {
   const local = loadBatchRegistry();
+  const sheetKnown = S.sheetBatchReg !== null;
   const sheet = S.sheetBatchReg || {};
-  const bases = new Set([...Object.keys(local), ...Object.keys(sheet)]);
+  // Once the Sheet has been read at least once, it's the authority on what still exists —
+  // a batch this device remembers locally but the Sheet no longer has (e.g. someone
+  // cleared it out) should disappear from the list, not linger forever just because this
+  // browser once touched it. Before the Sheet has loaded even once (S.sheetBatchReg still
+  // null), fall back to local-only so something still shows instead of a blank list while
+  // the very first sync is in flight.
+  const bases = sheetKnown ? new Set(Object.keys(sheet)) : new Set(Object.keys(local));
   const merged = {};
   bases.forEach(base => {
     const l = local[base];
