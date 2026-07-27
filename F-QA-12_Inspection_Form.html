@@ -1367,7 +1367,7 @@ function buildProcesses(pk) {
 // S.roundData[r].entries  – pkey → { result, label, time }
 // S.roundData[r].braiding – "BR-01" → { result, label }
 // ═══════════════════════════════════════════════
-const ROUND_LABELS = ["Approval Sample", "09:00", "12:00", "14:00", "17:00", "19:00", "Last of Shift"];
+const ROUND_LABELS = ["Approval Sample", "10:30 AM", "01:00 PM", "03:00 PM", "06:00 PM", "Last Of Shift"];
 function emptyRound() { return { entries:{}, braiding:{} }; }
 
 // ═══════════════════════════════════════════════
@@ -3106,7 +3106,7 @@ function esc(s) { return (s||"").replace(/\\/g,"\\\\").replace(/'/g,"\\'"); }
 // It writes ONLY to the "Verified By"/"Verified At" columns (appended after all data
 // columns), so it can never collide with an operator's own in-progress row updates.
 // ═══════════════════════════════════════════════
-const VERIFY_PIN = "5709";
+const VERIFY_PIN = "8396";
 
 function openVerifyReports() {
   S.vrPin = ""; S.vrName = ""; S.vrRows = null; S.vrLoading = false; S.vrError = "";
