@@ -1581,6 +1581,20 @@ function genBatchBase(dateStr, productCode) {
   return `${y}${reversed}-${productCode}`;
 }
 
+// Two SEPARATE runs of the same product on the same date (e.g. two different customers'
+// orders) would otherwise generate the identical Batch No. and silently overwrite each
+// other's Sheet rows. When startInspection() detects that collision, it appends the next
+// unused letter here — first extra run gets "-A", next "-B", and so on — making each one
+// its own distinct batch identity from that point on (its own "Continue Existing Batch"
+// entry, its own Approval Sample gate, its own Sheet rows).
+function nextBatchSuffix(base, registry) {
+  const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  for (const letter of letters) {
+    if (!registry[`${base}-${letter}`]) return letter;
+  }
+  return null;
+}
+
 function loadBatchRegistry() {
   try { return JSON.parse(localStorage.getItem(BATCH_REG_KEY)) || {}; }
   catch (e) { return {}; }
@@ -2024,18 +2038,43 @@ function startInspection() {
   if (!S.product)  { alert("Please select a product."); return; }
   if (!S.operator) { alert("Please select an operator."); return; }
 
-  // Defense in depth: the Setup screen's shift buttons already disable everything except
-  // Approval Sample until it's done for this batch — this re-checks the rule authoritatively
-  // regardless of UI state, since Approval Sample must come first for every product.
   const gateBase = genBatchBase(S.date, PRODUCTS[S.product].label);
-  const gateInfo = mergedBatchRegistry()[gateBase];
-  const approvalDone = !!(gateInfo && gateInfo.rounds && gateInfo.rounds[0] && gateInfo.rounds[0].complete);
-  if (!approvalDone && ROUND_LABELS.indexOf(S.shift) !== 0) {
-    alert("Approval Sample must be completed for this batch before any other shift can be started.");
-    return;
+  const registry = mergedBatchRegistry();
+  let finalBase = gateBase;
+
+  if (registry[gateBase]) {
+    // A batch already exists today for this exact product+date. That's normal if you're
+    // resuming your own work-in-progress — but that should go through "Continue Existing
+    // Batch" below, which is the only path that safely resumes a round. Landing here means
+    // either a genuinely separate run (different customer/order sharing the same date and
+    // product) or someone forgetting to use Continue — ask, since silently reusing the same
+    // Batch No. would overwrite whatever's already saved under it.
+    const isSeparateRun = confirm(
+      `A batch for ${PRODUCTS[S.product].label} on ${S.date} already exists (${gateBase}).\n\n` +
+      `Press OK if this is a SEPARATE run — a different customer or order — it'll be saved ` +
+      `as its own new batch (${gateBase}-A, -B, …).\n\n` +
+      `Press Cancel if you meant to continue that existing batch — use "Continue Existing ` +
+      `Batch" below instead.`
+    );
+    if (!isSeparateRun) return;
+    const suffix = nextBatchSuffix(gateBase, registry);
+    if (!suffix) { alert("Too many separate runs for this product today — please contact an admin."); return; }
+    finalBase = `${gateBase}-${suffix}`;
+    // A brand-new run always starts fresh, regardless of whatever shift happened to be
+    // selected before this prompt fired.
+    S.shift = ROUND_LABELS[0];
+    S.currentRound = 0;
+  } else {
+    // Defense in depth: the Setup screen's shift buttons already disable everything except
+    // Approval Sample until it's done for this batch — this re-checks the rule authoritatively
+    // regardless of UI state, since Approval Sample must come first for every product.
+    if (ROUND_LABELS.indexOf(S.shift) !== 0) {
+      alert("Approval Sample must be completed for this batch before any other shift can be started.");
+      return;
+    }
   }
 
-  S.batchBase = genBatchBase(S.date, PRODUCTS[S.product].label);
+  S.batchBase = finalBase;
   S.batchDay  = 1;
   S.batchNo   = S.batchBase;
   S.reportedThroughIdx = 0;
