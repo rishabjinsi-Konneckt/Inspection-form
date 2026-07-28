@@ -1749,7 +1749,8 @@ function sheetRoundSummary(rowsForRound) {
   return {
     complete: rowsForRound.some(r => !!r["Finalised At"]),
     lastDate: last.Date || "",
-    rowNum:   last.__row
+    rowNum:   last.__row,
+    verifiedThru: last["Verified Thru Process"] || null
   };
 }
 
@@ -1810,6 +1811,7 @@ function mergedBatchRegistry() {
         lastDate:     (sSummary && sSummary.lastDate) || (lr && lr.lastDate) || "",
         rowNum:       (sSummary && sSummary.rowNum) || (lr && lr.rowNum) || null,
         complete:     sSummary ? sSummary.complete : !!(lr && lr.complete),
+        verifiedThru: (sSummary && sSummary.verifiedThru) || null,
         knownLocally: !!lr,
         sheetRows:    sRows || null
       };
@@ -1911,19 +1913,32 @@ function render() {
 // SCREEN 1 — SETUP
 // ═══════════════════════════════════════════════
 // Approval Sample (ROUND_LABELS[0]) must be completed before any other shift can be
-// started/continued, for every product, within a given batch. If the currently selected
-// product+date's batch hasn't finished its Approval Sample round yet, this both reports
-// that fact AND snaps S.shift back to Approval Sample if it had drifted onto a locked one.
+// started/continued, for every product, within a given batch. The bar to unlock is
+// Approval Sample having been VERIFIED through at least one process — not fully finished —
+// so a batch stuck on Process 040 all day doesn't have to sit completely idle: as soon as
+// a verifier has signed off on whatever Approval Sample has reached so far, other shifts
+// unlock (capped at that same verified point — see approvalSampleVerifiedThru()/navNext()).
+// If Approval Sample hasn't been verified at all yet, the gate still fully applies, exactly
+// like before. This both reports that fact AND snaps S.shift back to Approval Sample if it
+// had drifted onto a locked one.
 function enforceShiftGate() {
   const base = (S.product && S.date) ? genBatchBase(S.date, PRODUCTS[S.product].label) : null;
   const reg  = base ? mergedBatchRegistry()[base] : null;
-  const approvalDone = !!(reg && reg.rounds && reg.rounds[0] && reg.rounds[0].complete);
-  const locked = !!base && !approvalDone;
+  const approvalVerified = !!(reg && reg.rounds && reg.rounds[0] && reg.rounds[0].verifiedThru);
+  const locked = !!base && !approvalVerified;
   if (locked && ROUND_LABELS.indexOf(S.shift) !== 0) {
     S.shift = ROUND_LABELS[0];
     S.currentRound = 0;
   }
   return locked;
+}
+
+// Where Approval Sample's verification currently stands for the ACTIVE batch (S.batchBase)
+// — the ceiling every other shift is capped at. Null means nothing verified yet.
+function approvalSampleVerifiedThru() {
+  if (!S.batchBase) return null;
+  const info = mergedBatchRegistry()[S.batchBase];
+  return (info && info.rounds && info.rounds[0] && info.rounds[0].verifiedThru) || null;
 }
 
 function rSetup() {
@@ -1953,7 +1968,7 @@ function rSetup() {
     const roundSummary = ROUND_LABELS.map((lbl, i) => {
       const r = rounds[i];
       if (!r) return null;
-      return `${lbl}: ${r.complete ? "done" : "in progress"}`;
+      return `${lbl}: ${r.verifiedThru ? "V-" + r.verifiedThru : "not verified yet"}`;
     }).filter(Boolean).join(", ");
     return `<option value="${b}">${b} — ${registry[b].product} (day ${registry[b].lastDay} last done ${registry[b].lastDate})${roundSummary ? " · " + roundSummary : ""}</option>`;
   }).join("");
@@ -1977,12 +1992,12 @@ function rSetup() {
           const isLocked = shiftLocked && shi !== 0;
           const cls = `shift-btn ${S.shift===sh?"on":""} ${isLocked?"locked":""}`;
           const click = isLocked
-            ? `alert('Approval Sample must be completed for this batch before other shifts can be selected.')`
+            ? `alert('Approval Sample must be verified (at least partially) for this batch before other shifts can be selected.')`
             : `S.shift='${sh}';S.currentRound=${shi};render()`;
           return `<div class="${cls}" onclick="${click}">${sh}</div>`;
         }).join("")}
       </div>
-      ${shiftLocked ? `<div style="font-size:12px;color:#c2410c;margin-top:6px;">🔒 Approval Sample must be completed for this batch before other shifts unlock.</div>` : ""}
+      ${shiftLocked ? `<div style="font-size:12px;color:#c2410c;margin-top:6px;">🔒 Approval Sample must be verified by Verify Reports (at least partially) before other shifts unlock.</div>` : ""}
       <label>Prepared By (Device ID)</label>
       <select id="s-op" onchange="S.operator=this.value;render()"><option value="">— Select —</option>${duOpts}</select>
       <label>PIN</label>
@@ -2066,10 +2081,12 @@ function startInspection() {
     S.currentRound = 0;
   } else {
     // Defense in depth: the Setup screen's shift buttons already disable everything except
-    // Approval Sample until it's done for this batch — this re-checks the rule authoritatively
-    // regardless of UI state, since Approval Sample must come first for every product.
+    // Approval Sample until it's been at least partially verified — this re-checks the rule
+    // authoritatively regardless of UI state, since Approval Sample must come first for
+    // every product. (A brand-new batch has nothing verified yet, so this always blocks —
+    // matches today's behavior exactly for that case.)
     if (ROUND_LABELS.indexOf(S.shift) !== 0) {
-      alert("Approval Sample must be completed for this batch before any other shift can be started.");
+      alert("Approval Sample must be verified (at least partially) for this batch before any other shift can be started.");
       return;
     }
   }
@@ -2103,9 +2120,9 @@ function continueBatch() {
   const rounds    = info.rounds || {};
   const roundInfo = rounds[roundIdx];
 
-  const approvalDone = !!(rounds[0] && rounds[0].complete);
-  if (roundIdx !== 0 && !approvalDone) {
-    alert("Approval Sample must be completed for this batch before other shifts can be continued.");
+  const approvalVerified = !!(rounds[0] && rounds[0].verifiedThru);
+  if (roundIdx !== 0 && !approvalVerified) {
+    alert("Approval Sample must be verified (at least partially) for this batch before other shifts can be continued.");
     return;
   }
 
@@ -2168,6 +2185,15 @@ function rProcess() {
 
   const canNoRun = S.batchDay > 1 && hasOp && !done;
 
+  // Non-Approval-Sample shifts are capped at wherever Approval Sample's verification
+  // currently stands — surface that here so it's not a surprise when "Next" gets blocked.
+  const capNote = S.currentRound !== 0 ? (() => {
+    const capNo = approvalSampleVerifiedThru();
+    return capNo
+      ? `<div style="font-size:12px;color:#7c3aed;background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px;padding:8px 12px;margin-bottom:12px;">🔒 This shift is capped at Process ${capNo} — Approval Sample's currently verified point.</div>`
+      : `<div style="font-size:12px;color:#c2410c;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:8px 12px;margin-bottom:12px;">🔒 Approval Sample hasn't been verified yet today — this shift can't proceed past this point until it is.</div>`;
+  })() : "";
+
   return `
     <div class="header">
       <h1>Process ${proc.no} · ${proc.name}</h1>
@@ -2177,6 +2203,7 @@ function rProcess() {
       <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
       <div class="step-label">Step ${S.processIdx+1} of ${total}</div>
     </div>
+    ${capNote}
     <div class="card">
       <span class="proc-badge">Process ${proc.no}</span>
       <div class="proc-title">${proc.name}</div>
@@ -2492,6 +2519,21 @@ function navNext() {
   const procs = buildProcesses(S.product);
   const proc  = procs[S.processIdx];
   if (!S.procOperators[proc.no]) { alert("Please select an operator for this process."); return; }
+
+  // Every shift EXCEPT Approval Sample is capped at wherever Approval Sample's own
+  // verification currently stands — see enforceShiftGate()/approvalSampleVerifiedThru().
+  // This only blocks moving FURTHER; anything already recorded stays exactly as it is.
+  if (S.currentRound !== 0) {
+    const capNo  = approvalSampleVerifiedThru();
+    const capIdx = capNo ? procs.findIndex(p => p.no === capNo) : -1;
+    if (S.processIdx >= capIdx) {
+      alert(capNo
+        ? `This shift can't move past Process ${proc.no} yet — Approval Sample has only been verified through Process ${capNo}. Check back once that moves further (tap "↻ refresh" on Setup to pull the latest).`
+        : `This shift can't proceed yet — Approval Sample hasn't been verified at all today. Check back once at least part of it has been verified.`);
+      return;
+    }
+  }
+
   S.activeBraid = null;
   if (S.processIdx < procs.length-1) S.processIdx++;
   else S.screen = "review";
@@ -2684,8 +2726,14 @@ const SHEET_HEADERS = [
   "Crimp O.D. Photo (P120)","Pressure Testing Photo (P120)","Fitting Load Test Photo (P120)","Air Leakage Photo (P120)",
   "Braiding Photos","Supervisor","Finalised At","Crimp O.D. Measured (P120)","Batch No.",
   "Verified By","Verified At","Device ID","Verified Device ID",
-  ...Array.from({length:18}, (_,i) => `BR-${String(i+1).padStart(2,"0")} Photo`)
+  ...Array.from({length:18}, (_,i) => `BR-${String(i+1).padStart(2,"0")} Photo`),
+  "Verified Thru Process"
 ];
+// "Verified Thru Process" is a cumulative high-water mark, not a one-time stamp: it holds
+// the highest process number (e.g. "070") that had any data on it the last time someone
+// verified this row. verifyVrRow() only ever moves it forward — a verifier reviewing a row
+// again later is reviewing just the NEW processes since this value, not redoing the whole
+// row. See highestFilledProcess() and loadVrList().
 // The legacy "Braiding Photos" column (packed "BR-01: url; BR-02: url; ..." single cell)
 // is kept exactly as-is for backward compatibility with historical rows — reflowing/removing
 // a column in the middle of a live sheet with existing data is too risky. The 18 columns
@@ -3590,10 +3638,17 @@ async function loadVrList() {
       const msg = (data && data.error && (data.error.error?.message || data.error)) || "Search failed";
       throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
     }
-    // Only rows that are missing a "Verified By" are actionable here — a row can be
-    // partially through inspection (paused mid-batch) and still show up; verifying it
-    // just signs off on whatever was saved so far, it doesn't block the rest being added.
-    S.vrRows = (data.rows || []).filter(r => !r["Verified By"]);
+    // Actionable here means "there's new data beyond whatever was verified last time" —
+    // NOT just "never verified at all". Verification is cumulative (see "Verified Thru
+    // Process" / highestFilledProcess()): a row already verified through Process 030 that's
+    // since gained Process 040-070 still needs another pass, just for the new part. A row
+    // with nothing filled in yet, or with no new progress since its last verification,
+    // doesn't need attention.
+    S.vrRows = (data.rows || []).filter(r => {
+      const highest = highestFilledProcess(r, r.Product);
+      if (!highest) return false;
+      return highest !== (r["Verified Thru Process"] || null);
+    });
   } catch (err) {
     S.vrError = err.name === "AbortError" ? "Timed out reaching the Sheet (it may just be waking up) — tap Refresh." : err.message;
   } finally {
@@ -3613,12 +3668,19 @@ function rVrList() {
     bodyHtml = `<div style="text-align:center;padding:24px;color:#94a3b8;font-size:13px;">Nothing waiting on verification 🎉</div>`;
   } else {
     bodyHtml = S.vrRows.map(r => {
-      const isOwn = r.Operator && r.Operator === S.vrName;
+      // Self-verification is blocked by DEVICE, not by shop-floor Operator — "Operator" is
+      // the OPERATORS-list worker who ran the process, which is a separate namespace from
+      // the DEVICE_USERS person doing the preparing/verifying (see "Device ID" column).
+      const isOwn = r["Device ID"] && r["Device ID"] === S.vrName;
+      const prevThru = r["Verified Thru Process"] || null;
+      const progressNote = prevThru
+        ? `Previously verified thru Process ${prevThru} — new progress since then`
+        : "Not verified yet";
       return `<div class="ver-row">
         <div class="ver-info">
           <div class="sum-proc">${esc(r["Batch No."] || "—")} · ${esc(r.Product||"")}</div>
           <div class="sum-char">${esc(r.Date||"")} · ${esc(r["Shift / Sample"]||"")}</div>
-          <div class="sum-obs">Prepared by ${esc(r.Operator||"—")}${r["Finalised At"] ? "" : " · not yet finalised"}</div>
+          <div class="sum-obs">Prepared by ${esc(r["Device ID"]||r.Operator||"—")} · ${progressNote}${r["Finalised At"] ? "" : " · not yet finalised"}</div>
         </div>
         <button class="ver-btn" ${isOwn?"disabled":""} onclick="${isOwn?"":"openVrDetail("+r.__row+")"}">
           ${isOwn ? "Own work" : "Review →"}
@@ -3641,7 +3703,7 @@ function rVrList() {
 function openVrDetail(rowNum) {
   const row = (S.vrRows || []).find(r => r.__row === rowNum);
   if (!row) { alert("Row not found — try refreshing the list."); return; }
-  if (row.Operator && row.Operator === S.vrName) {
+  if (row["Device ID"] && row["Device ID"] === S.vrName) {
     alert("You prepared this report — someone else needs to verify it.");
     return;
   }
@@ -3670,6 +3732,31 @@ function vrJudge(label) {
   return { cls:"b-ok", lbl:"OK" };
 }
 
+// The highest process (by pipeline order, e.g. "070") that has ANY data filled in on this
+// Sheet row. This is what "reached" means for both the V-XXX display and the progressive
+// shift gate — processes are worked sequentially, so the last one with data is treated as
+// the frontier. Returns null if the row has no tracked data at all yet.
+function highestFilledProcess(row, productKey) {
+  const product = PRODUCTS[productKey];
+  if (!product) return null;
+  const procs = buildProcesses(productKey);
+  let highest = null;
+  procs.forEach(proc => {
+    let hasData;
+    if (proc.type === "braiding") {
+      const n = product.braiding.machines;
+      hasData = Array.from({length:n}, (_,i) => row[`BR-${String(i+1).padStart(2,"0")} O.D.`]).some(Boolean);
+    } else {
+      hasData = proc.checks.some(c => {
+        const v = vrSheetValue(row, proc.no, c.key);
+        return v !== null && v !== "";
+      });
+    }
+    if (hasData) highest = proc.no;
+  });
+  return highest;
+}
+
 function rVrDetail() {
   const row = S.vrDetailRow;
   if (!row) return `<div class="header"><h1>🔒 Verify Reports</h1></div>
@@ -3677,8 +3764,17 @@ function rVrDetail() {
 
   const product = PRODUCTS[row.Product];
   const procs = product ? buildProcesses(row.Product) : [];
+  // Verification is cumulative — anything at or before this point was already signed off
+  // on a previous pass; everything after it is new since then and is what this review is
+  // actually for. See highestFilledProcess()/"Verified Thru Process".
+  const prevThru = row["Verified Thru Process"] || null;
+  const prevThruIdx = prevThru ? procs.findIndex(p => p.no === prevThru) : -1;
 
-  const rows = procs.map(proc => {
+  const rows = procs.map((proc, procIdx) => {
+    const isNew = procIdx > prevThruIdx;
+    const stageTag = isNew
+      ? `<span class="badge b-na" style="background:#faf5ff;color:#7c3aed;">🆕 New</span>`
+      : `<span class="badge b-na" style="opacity:.6;">✓ Already verified</span>`;
     if (proc.type === "braiding") {
       const n = product.braiding.machines;
       const vals = Array.from({length:n}, (_,i) => row[`BR-${String(i+1).padStart(2,"0")} O.D.`]).filter(Boolean);
@@ -3687,9 +3783,9 @@ function rVrDetail() {
       const allNoRun = vals.every(v => v === "No Run");
       const cls = allNoRun ? "b-na" : anyFail ? "b-ng" : "b-ok";
       const lbl = allNoRun ? "No Run" : anyFail ? "NG" : "OK";
-      return `<div class="ver-row">
+      return `<div class="ver-row" style="${isNew?"":"opacity:.55;"}">
         <div class="ver-info">
-          <div class="sum-proc">Process ${proc.no}</div>
+          <div class="sum-proc">Process ${proc.no} ${stageTag}</div>
           <div class="sum-char">Wire Braiding</div>
           <div class="sum-obs">${esc(vals.join(", "))}</div>
         </div>
@@ -3700,9 +3796,9 @@ function rVrDetail() {
       const val = vrSheetValue(row, proc.no, c.key);
       if (val === null) return "";
       const j = vrJudge(val);
-      return `<div class="ver-row">
+      return `<div class="ver-row" style="${isNew?"":"opacity:.55;"}">
         <div class="ver-info">
-          <div class="sum-proc">Process ${proc.no} · ${esc(proc.machine)}</div>
+          <div class="sum-proc">Process ${proc.no} · ${esc(proc.machine)} ${stageTag}</div>
           <div class="sum-char">${esc(c.key)}</div>
           <div class="sum-obs">Spec: ${esc(c.spec||"—")}</div>
         </div>
@@ -3712,24 +3808,24 @@ function rVrDetail() {
   }).join("");
 
   const confirmBlock = S.vrJustVerified ? `
-    <div class="alert green" style="margin-bottom:14px;">✅ Verified by <strong>${esc(S.vrName)}</strong> · ${esc(row["Verified At"]||"")}</div>
+    <div class="alert green" style="margin-bottom:14px;">✅ Verified by <strong>${esc(S.vrName)}</strong> thru Process ${esc(row["Verified Thru Process"]||"—")} · ${esc(row["Verified At"]||"")}</div>
     <div class="nav-row no-print">
       <button class="btn-outline" onclick="window.print()">🖨 Print / Save PDF</button>
       <button class="btn-primary" style="margin-top:0;" onclick="S.screen='vrlist';loadVrList()">Done → Back to List</button>
     </div>` : `
     <div class="nav-row no-print">
       <button class="btn-back" onclick="S.screen='vrlist';render()">← Back</button>
-      <button class="btn-next purple" onclick="verifyVrRow(${row.__row}, '${esc(row.Operator||"")}')">✓ Verify &amp; Finalise</button>
+      <button class="btn-next purple" onclick="verifyVrRow(${row.__row}, '${esc(row["Device ID"]||"")}')">✓ Verify New Progress</button>
     </div>`;
 
   return `
-    <div class="header sup"><h1>🔍 Review Before Verifying</h1><p>Go through every entry, then verify</p></div>
+    <div class="header sup"><h1>🔍 Review Before Verifying</h1><p>${prevThru ? `Previously verified thru Process ${prevThru} — review the 🆕 New items below` : "Go through every entry, then verify"}</p></div>
     <div class="card">
       <div class="report-meta">
         <div class="meta-item"><div class="meta-lbl">Product</div><div class="meta-val">${esc(row.Product)}</div></div>
         <div class="meta-item"><div class="meta-lbl">Batch No.</div><div class="meta-val">${esc(row["Batch No."]||"—")}</div></div>
         <div class="meta-item"><div class="meta-lbl">Date</div><div class="meta-val">${esc(row.Date)}</div></div>
-        <div class="meta-item"><div class="meta-lbl">Prepared By</div><div class="meta-val">${esc(row.Operator)}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Prepared By (Device ID)</div><div class="meta-val">${esc(row["Device ID"]||row.Operator||"—")}</div></div>
         <div class="meta-item"><div class="meta-lbl">Shift</div><div class="meta-val">${esc(row["Shift / Sample"])}</div></div>
         <div class="meta-item"><div class="meta-lbl">Finalised</div><div class="meta-val" style="font-size:12px;">${esc(row["Finalised At"]||"not yet")}</div></div>
       </div>
@@ -3738,12 +3834,15 @@ function rVrDetail() {
     ${confirmBlock}`;
 }
 
-async function verifyVrRow(rowNum, operatorName) {
-  if (operatorName && operatorName === S.vrName) {
+async function verifyVrRow(rowNum, deviceId) {
+  if (deviceId && deviceId === S.vrName) {
     alert("You prepared this report — someone else needs to verify it.");
     return;
   }
+  const row = S.vrDetailRow;
+  if (!row) { alert("Row not found — try refreshing the list."); return; }
   try {
+    const newThru = highestFilledProcess(row, row.Product);
     const startCol = colLetter(SHEET_DATA_COLS + 1); // "Verified By"
     const endCol   = colLetter(SHEET_DATA_COLS + 2); // "Verified At"
     const range = `${startCol}${rowNum}:${endCol}${rowNum}`;
@@ -3759,20 +3858,34 @@ async function verifyVrRow(rowNum, operatorName) {
       throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
     }
     S.vrRows = (S.vrRows || []).filter(r => r.__row !== rowNum);
-    if (S.vrDetailRow) S.vrDetailRow["Verified At"] = verifiedAt;
+    if (S.vrDetailRow) {
+      S.vrDetailRow["Verified At"] = verifiedAt;
+      S.vrDetailRow["Verified Thru Process"] = newThru;
+    }
     S.vrJustVerified = true;
     render();
 
-    // Stamp which device verified this row — kept in its OWN column (47), never sharing a
-    // range with the operator's Device ID (46) above, so verifying a row can never
-    // overwrite the record of which device originally prepared it. Best-effort, same as
-    // the operator-side stamp: never allowed to fail the actual verification.
+    // Stamp which device verified this row — kept in its OWN column, never sharing a range
+    // with the operator's Device ID above, so verifying a row can never overwrite the
+    // record of which device originally prepared it. Best-effort, same as the operator-side
+    // stamp: never allowed to fail the actual verification.
     const verifierDeviceCol = colLetter(SHEET_DATA_COLS + 4);
     fetch("/api/submit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode: "update", range: `${verifierDeviceCol}${rowNum}:${verifierDeviceCol}${rowNum}`, rows: [[S.vrName || ""]] })
     }).catch(() => {});
+
+    // Extend the cumulative "Verified Thru Process" high-water mark — its own isolated
+    // column, best-effort, same pattern as above.
+    if (newThru) {
+      const verifiedThruCol = colLetter(SHEET_DATA_COLS + 23);
+      fetch("/api/submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "update", range: `${verifiedThruCol}${rowNum}:${verifiedThruCol}${rowNum}`, rows: [[newThru]] })
+      }).catch(() => {});
+    }
   } catch (err) {
     alert("Couldn't save verification: " + err.message);
   }
