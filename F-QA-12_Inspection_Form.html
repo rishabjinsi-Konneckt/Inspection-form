@@ -2340,23 +2340,31 @@ function selectBraidMachine(m) {
 }
 
 function recordBraid(m, result, label) {
-  curBraiding()[m]  = { result, label };
+  const existing = curBraiding()[m] || {};
+  curBraiding()[m] = { ...existing, result, label };
   S.activeBraid  = null;
   render();
 }
 
 // ── entry recorders ──
+// All of these merge onto any existing entry (rather than replacing it outright) so a
+// photo already attached via handlePhotoSelect()/handleBraidPhotoSelect() — which itself
+// merges — is never silently wiped out just because the operator taps a result afterward.
 function recordPF(key, result, label) {
-  curEntries()[key] = { result, label, time: nowTime() }; render();
+  const existing = curEntries()[key] || {};
+  curEntries()[key] = { ...existing, result, label, time: nowTime() }; render();
 }
 function selectPass(key) {
-  curEntries()[key] = { result:"PASS", label:"", time: nowTime() }; render();
+  const existing = curEntries()[key] || {};
+  curEntries()[key] = { ...existing, result:"PASS", label:"", time: nowTime() }; render();
 }
 function recordSub(key, range) {
-  curEntries()[key] = { result:"PASS", label:range, time: nowTime() }; render();
+  const existing = curEntries()[key] || {};
+  curEntries()[key] = { ...existing, result:"PASS", label:range, time: nowTime() }; render();
 }
 function recordBand(key, result, label) {
-  curEntries()[key] = { result, label, time: nowTime() };
+  const existing = curEntries()[key] || {};
+  curEntries()[key] = { ...existing, result, label, time: nowTime() };
   if (key === pkey("090","Length")) {
     if (result === "NO_RUN") applyLengthNoRunCascade();
     else revertLengthNoRunCascade();
@@ -2421,7 +2429,8 @@ function revertLengthNoRunCascade() {
 function recordManual(key) {
   const val = document.getElementById("manual_" + key)?.value?.trim();
   if (!val) return;
-  curEntries()[key] = { result:"PASS", label: val, time: nowTime() }; render();
+  const existing = curEntries()[key] || {};
+  curEntries()[key] = { ...existing, result:"PASS", label: val, time: nowTime() }; render();
 }
 
 function navBack() {
@@ -2623,8 +2632,14 @@ const SHEET_HEADERS = [
   "O.D. Photo","I.D. Photo","Pressure Photo (P050)","Length Photo (P090)",
   "Crimp O.D. Photo (P120)","Pressure Testing Photo (P120)","Fitting Load Test Photo (P120)","Air Leakage Photo (P120)",
   "Braiding Photos","Supervisor","Finalised At","Crimp O.D. Measured (P120)","Batch No.",
-  "Verified By","Verified At","Device ID","Verified Device ID"
+  "Verified By","Verified At","Device ID","Verified Device ID",
+  ...Array.from({length:18}, (_,i) => `BR-${String(i+1).padStart(2,"0")} Photo`)
 ];
+// The legacy "Braiding Photos" column (packed "BR-01: url; BR-02: url; ..." single cell)
+// is kept exactly as-is for backward compatibility with historical rows — reflowing/removing
+// a column in the middle of a live sheet with existing data is too risky. The 18 columns
+// below give each machine its own dedicated photo cell going forward; see
+// currentBraidPhotoCols() and its isolated write in submitToSheet().
 // Number of DATA columns the operator's own writes ever touch (through "Batch No.").
 // "Verified By"/"Verified At" are appended afterward and are only ever written by the
 // separate, cross-device Verify Reports flow — kept out of this range so the two sides
@@ -2710,6 +2725,32 @@ function buildSheetRow() {
     g("120","Crimp O.D.").photo || "", g("120","Pressure Testing").photo || "", g("120","Fitting Load Test").photo || "", g("120","Air Leakage").photo || "",
     braidPhotos, S.supName, S.finalisedAt, g("120","Crimp O.D.").label || "", S.batchNo || ""
   ];
+}
+
+// Per-machine braiding photo URLs (BR-01..BR-18) for the CURRENT round, one dedicated cell
+// each — written separately from buildSheetRow() via its own isolated range (see
+// submitToSheet()), same pattern as Device ID. Mirrors buildSheetRow()'s windowing: if this
+// round's braiding step was already reported in an earlier same-day save, everything comes
+// back blank so a later save can never blank out photos already committed to the Sheet.
+function currentBraidPhotoCols() {
+  const p = PRODUCTS[S.product];
+  if (!p) return Array.from({length:18}, () => "");
+  const rd = S.roundData[S.currentRound];
+  if (!rd) return Array.from({length:18}, () => "");
+
+  const procs = buildProcesses(S.product);
+  const procOrder = {};
+  procs.forEach((pr, i) => { procOrder[pr.no] = i; });
+  const reportedThru = S.reportedThroughIdx || 0;
+  const braidProc = procs.find(pr => pr.type === "braiding");
+  const braidIdx  = braidProc ? procOrder[braidProc.no] : -1;
+  const braidWindowedOut = braidIdx >= 0 && braidIdx < reportedThru;
+  if (braidWindowedOut) return Array.from({length:18}, () => "");
+
+  return Array.from({length:18}, (_, bi) => {
+    const m = `BR-${String(bi+1).padStart(2,"0")}`;
+    return (rd.braiding[m] && rd.braiding[m].photo) || "";
+  });
 }
 
 // A row number cached in S.dayRowNum / the batch registry can go stale if someone deletes
@@ -2803,6 +2844,23 @@ async function submitToSheet(isRetry) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode: "update", range: `${deviceCol}${rowNum}:${deviceCol}${rowNum}`, rows: [[S.operator || ""]] })
       }).catch(() => {});
+    }
+
+    // Per-machine braiding photos (BR-01..BR-18), each in its own dedicated column after
+    // Verified Device ID — isolated write, best-effort, never blocks the real submission.
+    // Skipped entirely if there's nothing to write (also naturally true when this round's
+    // braiding step was already reported in an earlier same-day save).
+    if (rowNum) {
+      const braidCols = currentBraidPhotoCols();
+      if (braidCols.some(v => v)) {
+        const startCol = colLetter(SHEET_DATA_COLS + 5);
+        const endCol   = colLetter(SHEET_DATA_COLS + 22);
+        fetch("/api/submit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: "update", range: `${startCol}${rowNum}:${endCol}${rowNum}`, rows: [braidCols] })
+        }).catch(() => {});
+      }
     }
 
     // NOTE: reportedThroughIdx is deliberately NOT advanced here — it represents "start of
