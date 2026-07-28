@@ -1539,6 +1539,7 @@ let S = {
   batchBase:"", batchNo:"", batchDay:1, reportedThroughIdx:0, dayRowNum:null,
   sheetBatchReg:null, sheetBatchRegLoading:false, sheetBatchRegError:"",
   logFilters:{date:"",product:"",search:""}, logResults:null, logLoading:false, logError:"", logDetailRow:null,
+  batchReportFrom:"setup", batchReportBase:"", batchReportDay:1, batchReportRows:null, batchReportLoading:false, batchReportError:"",
   vrPin:"", vrName:"", vrRows:null, vrLoading:false, vrError:"", vrDetailRow:null, vrJustVerified:false
 };
 
@@ -1694,14 +1695,22 @@ async function verifyDevicePin(name, enteredPin) {
 // truth, regardless of device); the local registry wins on "which process to resume at"
 // since that resume point is never written to the Sheet.
 // ═══════════════════════════════════════════════
+// A batch that runs more than one calendar day gets a distinct "Batch No." per day —
+// day 1 is the bare base (e.g. "20267062-14ESBB60"), day 2+ appends "-<day>". Used both
+// to build the registry below and to identify exactly which day's rows belong to a
+// specific batch report (see openBatchReport()).
+function parseBatchNo(rawBatch) {
+  const s = (rawBatch || "").trim();
+  const m = s.match(/^(.*)-(\d+)$/);
+  return m ? { base: m[1], day: parseInt(m[2], 10) } : { base: s, day: 1 };
+}
+
 function buildSheetBatchRegistry(rows) {
   const reg = {};
   (rows || []).forEach(r => {
     const rawBatch = (r["Batch No."] || "").trim();
     if (!rawBatch) return;
-    const m = rawBatch.match(/^(.*)-(\d+)$/);
-    const base = m ? m[1] : rawBatch;
-    const day  = m ? parseInt(m[2], 10) : 1;
+    const { base, day } = parseBatchNo(rawBatch);
     const roundIdx = ROUND_LABELS.indexOf(r["Shift / Sample"]);
     if (roundIdx < 0) return;
     const entry = reg[base] || { product: "", lastDay: 0, lastDate: "", rounds: {} };
@@ -1878,8 +1887,8 @@ function allEntryKeys() {
 // RENDER ROUTER
 // ═══════════════════════════════════════════════
 function render() {
-  const fns = { setup:rSetup, process:rProcess, review:rReview, submitted:rSubmitted, report:rReport, log:rLog, logdetail:rLogDetail, paused:rPaused,
-    vrpin:rVrPin, vrname:rVrName, vrlist:rVrList, vrdetail:rVrDetail };
+  const fns = { setup:rSetup, process:rProcess, review:rReview, submitted:rSubmitted, report:rReport, log:rLog, logdetail:rLogDetail,
+    batchreport:rBatchReport, paused:rPaused, vrpin:rVrPin, vrname:rVrName, vrlist:rVrList, vrdetail:rVrDetail };
   document.getElementById("app").innerHTML = fns[S.screen]();
   saveState();
 }
@@ -1981,6 +1990,7 @@ function rSetup() {
       <label style="margin-top:0;">Batch Number</label>
       <select id="s-batch"><option value="">— Select batch —</option>${contOpts}</select>
       <button class="btn-outline" style="background:#fff7ed;color:#c2410c;border-color:#f97316;" onclick="continueBatchClicked()">↻ Continue This Batch →</button>
+      <button class="btn-outline" style="background:#eff6ff;color:#1d4ed8;border-color:#2563eb;" onclick="viewBatchReportClicked()">📄 View Full Report (All Shifts)</button>
     </div>` : (S.sheetBatchRegLoading ? `<div style="text-align:center;font-size:12px;color:#94a3b8;margin-top:4px;">Checking for batches from other devices…</div>` : "")}
     <div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:4px;">F-QA-12 Rev.01 · Eff. 01.04.19</div>`;
 }
@@ -3068,6 +3078,16 @@ function rLog() {
   } else if (!S.logResults.rows.length) {
     bodyHtml = `<div style="text-align:center;padding:24px;color:#94a3b8;font-size:13px;">No records found.</div>`;
   } else {
+    const batchNos = [...new Set(S.logResults.rows.map(r => r["Batch No."]).filter(Boolean))];
+    const batchButtonsHtml = batchNos.length ? `
+      <div style="margin-top:12px;padding-top:12px;border-top:1px solid #f1f5f9;">
+        <div style="font-size:12px;color:#64748b;margin-bottom:6px;">📄 View a full batch report (all shifts, one page):</div>
+        ${batchNos.map(bn => {
+          const p = parseBatchNo(bn);
+          return `<button class="btn-outline" style="display:inline-block;width:auto;margin:0 6px 6px 0;padding:8px 12px;font-size:12px;background:#eff6ff;color:#1d4ed8;border-color:#2563eb;"
+            onclick="openBatchReport('${esc(p.base)}',${p.day},'log')">${esc(bn)}</button>`;
+        }).join("")}
+      </div>` : "";
     bodyHtml = `
       <div style="font-size:12px;color:#64748b;margin-bottom:8px;">Showing ${S.logResults.rows.length} of ${S.logResults.total} record(s) · tap a row for the full record</div>
       <div style="overflow-x:auto;">
@@ -3090,7 +3110,8 @@ function rLog() {
             </tr>`).join("")}
           </tbody>
         </table>
-      </div>`;
+      </div>
+      ${batchButtonsHtml}`;
   }
 
   return `
@@ -3229,6 +3250,195 @@ function rLogDetail() {
     </div>
     <div class="nav-row no-print">
       <button class="btn-back" onclick="S.screen='log';render()">← Back to Log</button>
+      <button class="btn-outline" onclick="window.print()">🖨 Print / Save PDF</button>
+    </div>`;
+}
+
+// ═══════════════════════════════════════════════
+// BATCH REPORT — all 6 shifts of one batch-day, side by side on one printable page.
+// Pulls live from the Sheet (not S.roundData) so it works regardless of which device(s)
+// did which shift. One page per batch-DAY: a batch that ran 3 days gets 3 separate
+// reports (matching the paper form, which is per-day), not one page cramming every day.
+// ═══════════════════════════════════════════════
+async function openBatchReport(base, day, fromScreen) {
+  S.batchReportFrom = fromScreen || S.screen;
+  S.batchReportBase = base;
+  S.batchReportDay = day;
+  S.batchReportRows = null;
+  S.batchReportLoading = true;
+  S.batchReportError = "";
+  S.screen = "batchreport";
+  render();
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  try {
+    const res = await fetch(`/api/log?search=${encodeURIComponent(base)}`, { signal: controller.signal });
+    const data = await res.json();
+    if (!res.ok) {
+      const msg = (data && data.error && (data.error.error?.message || data.error)) || "Couldn't load this batch.";
+      throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+    }
+    // The search above is a broad substring match server-side; narrow to rows whose
+    // Batch No. parses to exactly this base+day (a day-2+ batch no. contains the base as
+    // a substring too, so this exact check is what actually pins down the right day).
+    S.batchReportRows = (data.rows || []).filter(r => {
+      const parsed = parseBatchNo(r["Batch No."]);
+      return parsed.base === base && parsed.day === day;
+    });
+  } catch (err) {
+    S.batchReportError = err.name === "AbortError"
+      ? "Timed out reaching the Sheet (it may just be waking up) — try again."
+      : err.message;
+  } finally {
+    clearTimeout(timer);
+  }
+  S.batchReportLoading = false;
+  render();
+}
+
+// Reads the batch selected in the "Continue Existing Batch" dropdown and opens its report.
+// Prompts for which day if the batch has run more than one (rare — most batches finish in
+// a single day), since each day is its own page.
+function viewBatchReportClicked() {
+  const sel = document.getElementById("s-batch");
+  const base = sel ? sel.value : "";
+  if (!base) { alert("Please select a batch from the list first."); return; }
+  const info = mergedBatchRegistry()[base];
+  const lastDay = (info && info.lastDay) || 1;
+  let day = 1;
+  if (lastDay > 1) {
+    const input = prompt(`This batch has ${lastDay} day(s) of work. Which day's report do you want to view? (1-${lastDay})`, String(lastDay));
+    if (input === null) return;
+    day = parseInt(input, 10);
+    if (!Number.isInteger(day) || day < 1 || day > lastDay) { alert("Please enter a valid day number."); return; }
+  }
+  openBatchReport(base, day, "setup");
+}
+
+function rBatchReport() {
+  const base = S.batchReportBase;
+  const day  = S.batchReportDay;
+  const dayLbl = day > 1 ? ` · Day ${day}` : "";
+  const backTarget = S.batchReportFrom === "log" ? "log" : "setup";
+  const backBtn = `<button class="btn-back" onclick="S.screen='${backTarget}';render()">← Back</button>`;
+
+  if (S.batchReportLoading) {
+    return `<div class="header"><h1>📄 Batch Report</h1><p>${esc(base)}${dayLbl}</p></div>
+      <div class="card" style="text-align:center;padding:24px;color:#64748b;font-size:13px;">Loading…</div>
+      <div class="nav-row no-print">${backBtn}</div>`;
+  }
+  if (S.batchReportError) {
+    return `<div class="header"><h1>📄 Batch Report</h1><p>${esc(base)}${dayLbl}</p></div>
+      <div class="card"><div class="alert">⚠ ${esc(S.batchReportError)} · <span style="text-decoration:underline;cursor:pointer;" onclick="openBatchReport('${esc(base)}',${day},'${backTarget}')">Retry</span></div></div>
+      <div class="nav-row no-print">${backBtn}</div>`;
+  }
+
+  const rowsData = S.batchReportRows || [];
+  if (!rowsData.length) {
+    return `<div class="header"><h1>📄 Batch Report</h1><p>${esc(base)}${dayLbl}</p></div>
+      <div class="card" style="text-align:center;padding:24px;color:#94a3b8;font-size:13px;">No submitted rounds found for this batch-day yet.</div>
+      <div class="nav-row no-print">${backBtn}</div>`;
+  }
+
+  const byShift = {};
+  rowsData.forEach(r => {
+    const idx = ROUND_LABELS.indexOf(r["Shift / Sample"]);
+    if (idx >= 0) byShift[idx] = r;
+  });
+  const first = rowsData[0];
+  const product = PRODUCTS[first.Product];
+  const procs = product ? buildProcesses(first.Product) : [];
+
+  let totalNG = 0;
+  const rowsHtml = procs.map((proc) => {
+    if (proc.type === "braiding") {
+      const n = product.braiding.machines;
+      const ms = Array.from({length:n}, (_,i) => `BR-${String(i+1).padStart(2,"0")}`);
+      const obsCells = ROUND_LABELS.map((_, i) => {
+        const r = byShift[i];
+        if (!r) return `<td>—</td>`;
+        const detail = ms.map(m => r[`${m} O.D.`]).filter(Boolean).join("  ·  ");
+        return `<td style="font-size:9px;">${esc(detail)||"—"}</td>`;
+      }).join("");
+      const jdgCells = ROUND_LABELS.map((_, i) => {
+        const r = byShift[i];
+        if (!r) return `<td>—</td>`;
+        const vals = ms.map(m => r[`${m} O.D.`]).filter(Boolean);
+        if (!vals.length) return `<td>—</td>`;
+        const f = vals.filter(v => /FAIL|✗/.test(v)).length;
+        const allNoRun = vals.every(v => v === "No Run");
+        const cls = allNoRun ? "b-na" : f===0 ? "b-ok" : "b-ng";
+        const lbl = allNoRun ? "No Run" : f===0 ? "OK" : "NG";
+        if (f > 0) totalNG += f;
+        return `<td><span class="badge ${cls}">${lbl}</span></td>`;
+      }).join("");
+      return `<tr class="first">
+        <td style="font-weight:700;color:#1e3a5f;">070</td>
+        <td>Wire Braiding</td><td>Wire Braiding</td>
+        <td>O.D.</td><td>${esc(product.braiding.od)}</td><td>Vernier Caliper</td>
+        ${obsCells}${jdgCells}
+      </tr>`;
+    }
+    return proc.checks.map((c, ci) => {
+      const obsCells = ROUND_LABELS.map((_, i) => {
+        const r = byShift[i];
+        const val = r ? vrSheetValue(r, proc.no, c.key) : null;
+        return `<td>${esc(val||"—")}</td>`;
+      }).join("");
+      const jdgCells = ROUND_LABELS.map((_, i) => {
+        const r = byShift[i];
+        const val = r ? vrSheetValue(r, proc.no, c.key) : null;
+        if (!val) return `<td>—</td>`;
+        const j = vrJudge(val);
+        if (j.lbl === "NG") totalNG++;
+        return `<td><span class="badge ${j.cls}">${j.lbl}</span></td>`;
+      }).join("");
+      return `<tr ${ci===0?"class='first'":""}>
+        <td ${ci===0?`style="font-weight:700;color:#1e3a5f;"`:""}>${ci===0?proc.no:""}</td>
+        <td>${ci===0?esc(proc.machine):""}</td>
+        <td>${ci===0?esc(proc.name):""}</td>
+        <td>${esc(c.key)}</td><td>${esc(c.spec)}</td><td>${esc(c.method)}</td>
+        ${obsCells}${jdgCells}
+      </tr>`;
+    }).join("");
+  }).join("");
+
+  const preparedBy = [...new Set(rowsData.map(r => r["Device ID"]).filter(Boolean))].join(", ") || "—";
+  const verifiedBy = [...new Set(rowsData.map(r => r["Verified By"]).filter(Boolean))].join(", ") || "—";
+
+  return `
+    <div class="alert ${totalNG===0?"green":""}" style="margin-bottom:14px;">
+      ${totalNG===0 ? `✅ All submitted checks OK so far` : `⚠ ${totalNG} check(s) flagged NG`}
+      · ${rowsData.length} of ${ROUND_LABELS.length} shifts submitted
+    </div>
+    <div class="card">
+      <div style="font-size:16px;font-weight:800;color:#1e3a5f;">INPROCESS INSPECTION REPORT</div>
+      <div style="font-size:11px;color:#94a3b8;margin-bottom:14px;">Fmt. No.: F-QA-12 · Rev.01 · Eff. Date: 01.04.19</div>
+      <div class="report-meta">
+        <div class="meta-item"><div class="meta-lbl">Product</div><div class="meta-val">${esc(first.Product)}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Batch No.</div><div class="meta-val">${esc(first["Batch No."]||base)}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Date</div><div class="meta-val">${esc(first.Date)}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Prepared By (Device ID)</div><div class="meta-val">${esc(preparedBy)}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Verified By</div><div class="meta-val">${esc(verifiedBy)}</div></div>
+      </div>
+      <div style="overflow-x:auto;">
+        <table class="report-table">
+          <thead><tr>
+            <th rowspan="2">Proc.</th><th rowspan="2">Machine</th><th rowspan="2">Process</th>
+            <th rowspan="2">Characteristic</th><th rowspan="2">Spec.</th><th rowspan="2">Method</th>
+            <th colspan="${ROUND_LABELS.length}" style="text-align:center;">Observation</th>
+            <th colspan="${ROUND_LABELS.length}" style="text-align:center;">OK / NG</th>
+          </tr><tr>
+            ${ROUND_LABELS.map(l=>`<th style="font-size:10px;font-weight:600;">${l}</th>`).join("")}
+            ${ROUND_LABELS.map(l=>`<th style="font-size:10px;font-weight:600;">${l}</th>`).join("")}
+          </tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+    </div>
+    <div class="nav-row no-print">
+      ${backBtn}
       <button class="btn-outline" onclick="window.print()">🖨 Print / Save PDF</button>
     </div>`;
 }
