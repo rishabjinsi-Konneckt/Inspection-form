@@ -167,6 +167,8 @@ select:focus, input[type="date"]:focus { border-color: #2563eb; }
 .report-table td { padding: 7px; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
 .report-table tr:nth-child(even) td { background: #f8fafc; }
 .report-table tr.first td { border-top: 2px solid #e2e8f0; }
+.report-table tr.log-row { cursor: pointer; }
+.report-table tr.log-row:hover td { background: #eef2ff; }
 
 @media print {
   .no-print { display: none !important; }
@@ -1536,7 +1538,7 @@ let S = {
   submitStatus:"", submitError:"",
   batchBase:"", batchNo:"", batchDay:1, reportedThroughIdx:0, dayRowNum:null,
   sheetBatchReg:null, sheetBatchRegLoading:false, sheetBatchRegError:"",
-  logFilters:{date:"",product:"",search:""}, logResults:null, logLoading:false, logError:"",
+  logFilters:{date:"",product:"",search:""}, logResults:null, logLoading:false, logError:"", logDetailRow:null,
   vrPin:"", vrName:"", vrRows:null, vrLoading:false, vrError:"", vrDetailRow:null, vrJustVerified:false
 };
 
@@ -1876,7 +1878,7 @@ function allEntryKeys() {
 // RENDER ROUTER
 // ═══════════════════════════════════════════════
 function render() {
-  const fns = { setup:rSetup, process:rProcess, review:rReview, submitted:rSubmitted, report:rReport, log:rLog, paused:rPaused,
+  const fns = { setup:rSetup, process:rProcess, review:rReview, submitted:rSubmitted, report:rReport, log:rLog, logdetail:rLogDetail, paused:rPaused,
     vrpin:rVrPin, vrname:rVrName, vrlist:rVrList, vrdetail:rVrDetail };
   document.getElementById("app").innerHTML = fns[S.screen]();
   saveState();
@@ -3067,15 +3069,15 @@ function rLog() {
     bodyHtml = `<div style="text-align:center;padding:24px;color:#94a3b8;font-size:13px;">No records found.</div>`;
   } else {
     bodyHtml = `
-      <div style="font-size:12px;color:#64748b;margin-bottom:8px;">Showing ${S.logResults.rows.length} of ${S.logResults.total} record(s)</div>
+      <div style="font-size:12px;color:#64748b;margin-bottom:8px;">Showing ${S.logResults.rows.length} of ${S.logResults.total} record(s) · tap a row for the full record</div>
       <div style="overflow-x:auto;">
         <table class="report-table">
           <thead><tr>
             <th>Date</th><th>Product</th><th>Shift/Sample</th><th>Operator</th>
-            <th>O.D.</th><th>I.D.</th><th>Length</th><th>Supervisor</th><th>Photos</th>
+            <th>O.D.</th><th>I.D.</th><th>Length</th><th>Prepared By (Device ID)</th><th>Photos</th>
           </tr></thead>
           <tbody>
-            ${S.logResults.rows.map(r => `<tr>
+            ${S.logResults.rows.map((r, idx) => `<tr class="log-row" onclick="openLogDetail(${idx})">
               <td>${esc(r["Date"])}</td>
               <td>${esc(r["Product"])}</td>
               <td>${esc(r["Shift / Sample"])}</td>
@@ -3083,8 +3085,8 @@ function rLog() {
               <td>${esc(r["O.D. Measured"])}</td>
               <td>${esc(r["I.D. Measured"])}</td>
               <td>${esc(r["Length"])}</td>
-              <td>${esc(r["Supervisor"])}</td>
-              <td>${photoLinksForRow(r)}</td>
+              <td>${esc(r["Device ID"])}</td>
+              <td onclick="event.stopPropagation()">${photoLinksForRow(r)}</td>
             </tr>`).join("")}
           </tbody>
         </table>
@@ -3124,6 +3126,111 @@ function photoLinksForRow(r) {
     });
   }
   return links.length ? links.join(" ") : "—";
+}
+
+function openLogDetail(idx) {
+  const row = S.logResults && S.logResults.rows[idx];
+  if (!row) return;
+  S.logDetailRow = row;
+  S.screen = "logdetail";
+  render();
+}
+
+// Maps a (process no, check key) pair to its photo column in the Sheet — mirrors the
+// photo columns buildSheetRow() writes. Used by rLogDetail() to show a photo link next
+// to each reading, same idea as vrSheetValue() does for the reading itself.
+function logPhotoValue(procNo, checkKey, row) {
+  const col = {
+    "040|O.D.": "O.D. Photo", "040|I.D.": "I.D. Photo",
+    "050|Pressure": "Pressure Photo (P050)",
+    "090|Length": "Length Photo (P090)",
+    "120|Crimp O.D.": "Crimp O.D. Photo (P120)",
+    "120|Pressure Testing": "Pressure Testing Photo (P120)",
+    "120|Fitting Load Test": "Fitting Load Test Photo (P120)",
+    "120|Air Leakage": "Air Leakage Photo (P120)"
+  }[`${procNo}|${checkKey}`];
+  return col ? (row[col] || "") : "";
+}
+
+// A machine's photo, preferring its own dedicated "BR-xx Photo" column; falls back to
+// parsing the legacy packed "Braiding Photos" cell for rows submitted before that column
+// existed.
+function logBraidPhoto(row, m) {
+  const dedicated = row[`${m} Photo`];
+  if (dedicated) return dedicated;
+  const packed = row["Braiding Photos"] || "";
+  const hit = packed.split(";").map(s => s.trim()).find(s => s.startsWith(`${m}:`));
+  return hit ? hit.split(":").slice(1).join(":").trim() : "";
+}
+
+// Read-only, printable full-record view opened by tapping a row in the Inspection Log.
+// Reuses the same reading-lookup helpers (vrSheetValue/vrJudge) as the Verify Reports
+// detail screen, plus photo links, so this stays in sync with that screen's field mapping.
+function rLogDetail() {
+  const row = S.logDetailRow;
+  if (!row) return `<div class="header"><h1>📄 Inspection Record</h1></div>
+    <button class="btn-outline no-print" onclick="S.screen='log';render()">← Back</button>`;
+
+  const product = PRODUCTS[row.Product];
+  const procs = product ? buildProcesses(row.Product) : [];
+
+  const rows = procs.map(proc => {
+    if (proc.type === "braiding") {
+      const n = product.braiding.machines;
+      const items = Array.from({length:n}, (_,i) => `BR-${String(i+1).padStart(2,"0")}`)
+        .map(m => ({ m, val: row[`${m} O.D.`], photo: logBraidPhoto(row, m) }))
+        .filter(x => x.val);
+      if (!items.length) return "";
+      return items.map(x => {
+        const j = vrJudge(x.val);
+        const photoLink = x.photo ? ` &nbsp;<a href="${x.photo}" target="_blank" rel="noopener" class="no-print">📷 Photo</a>` : "";
+        return `<div class="ver-row">
+          <div class="ver-info">
+            <div class="sum-proc">Process ${proc.no} · ${esc(x.m)}</div>
+            <div class="sum-char">Wire Braiding O.D.</div>
+          </div>
+          <span class="badge ${j.cls}">${j.lbl} · ${esc(x.val)}</span>${photoLink}
+        </div>`;
+      }).join("");
+    }
+    return proc.checks.map(c => {
+      const val = vrSheetValue(row, proc.no, c.key);
+      if (val === null) return "";
+      const j = vrJudge(val);
+      const photo = logPhotoValue(proc.no, c.key, row);
+      const photoLink = photo ? ` &nbsp;<a href="${photo}" target="_blank" rel="noopener" class="no-print">📷 Photo</a>` : "";
+      return `<div class="ver-row">
+        <div class="ver-info">
+          <div class="sum-proc">Process ${proc.no} · ${esc(proc.machine)}</div>
+          <div class="sum-char">${esc(c.key)}</div>
+          <div class="sum-obs">Spec: ${esc(c.spec||"—")}</div>
+        </div>
+        <span class="badge ${j.cls}">${j.lbl} · ${esc(val||"—")}</span>${photoLink}
+      </div>`;
+    }).join("");
+  }).join("");
+
+  return `
+    <div class="header sup"><h1>📄 Inspection Record</h1><p>${esc(row.Date)} · ${esc(row.Product)} · ${esc(row["Shift / Sample"])}</p></div>
+    <div class="card">
+      <div class="report-meta">
+        <div class="meta-item"><div class="meta-lbl">Product</div><div class="meta-val">${esc(row.Product)}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Batch No.</div><div class="meta-val">${esc(row["Batch No."]||"—")}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Date</div><div class="meta-val">${esc(row.Date)}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Shift / Sample</div><div class="meta-val">${esc(row["Shift / Sample"])}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Operator</div><div class="meta-val">${esc(row.Operator)}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Prepared By (Device ID)</div><div class="meta-val">${esc(row["Device ID"]||"—")}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Finalised At</div><div class="meta-val" style="font-size:12px;">${esc(row["Finalised At"]||"not yet")}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Verified By</div><div class="meta-val">${esc(row["Verified By"]||"—")}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Verified At</div><div class="meta-val" style="font-size:12px;">${esc(row["Verified At"]||"not yet")}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Verified Device ID</div><div class="meta-val">${esc(row["Verified Device ID"]||"—")}</div></div>
+      </div>
+      ${rows || `<div style="text-align:center;padding:16px;color:#94a3b8;font-size:13px;">No tracked readings on this row.</div>`}
+    </div>
+    <div class="nav-row no-print">
+      <button class="btn-back" onclick="S.screen='log';render()">← Back to Log</button>
+      <button class="btn-outline" onclick="window.print()">🖨 Print / Save PDF</button>
+    </div>`;
 }
 
 async function runLogSearch() {
