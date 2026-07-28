@@ -3755,6 +3755,19 @@ function highestFilledProcess(row, productKey) {
   const product = PRODUCTS[productKey];
   if (!product) return null;
   const procs = buildProcesses(productKey);
+
+  // Only a subset of processes (currently 040/090/120, plus braiding) have their own
+  // tracked Sheet column — see vrSheetValue(). Processes like 030/050/060/080/100/130 are
+  // required and checked in the app but never had their values written to the Sheet, so
+  // scanning columns alone can never see them, even once genuinely finished. A finalised
+  // round is the one unambiguous exception: submitForVerification() refuses to set
+  // "Finalised At" until EVERY process — including the untracked ones — is complete, so
+  // that timestamp alone is proof the round reached the true last process, not just the
+  // last tracked one. Without this, a finished round would incorrectly cap out at whatever
+  // the last tracked process is (120), permanently blocking every other shift capped
+  // against it from ever reaching further.
+  if (row["Finalised At"]) return procs.length ? procs[procs.length - 1].no : null;
+
   let highest = null;
   procs.forEach(proc => {
     let hasData;
