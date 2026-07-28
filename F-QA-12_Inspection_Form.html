@@ -1227,6 +1227,11 @@ const SUPERVISORS = ["Saksham","QA Manager","Shift Supervisor","Other"];
 // "Prepared By" and Verify Reports' "Who is verifying?", both gated by a personal PIN —
 // see DEVICE IDENTIFICATION below.
 const DEVICE_USERS = ["Rishab (Admin)","Pooja","Gurdeep","Rakesh"];
+// The "can't verify your own prepared report" rule applies to everyone EXCEPT this person —
+// Rishab, as Admin, is trusted to sign off on his own prepared reports. Everyone else must
+// always have a different person verify their work. See the three isOwn/self-check spots
+// in the Verify Reports flow (rVrList, openVrDetail, verifyVrRow).
+const SELF_VERIFY_EXEMPT = "Rishab (Admin)";
 
 // ═══════════════════════════════════════════════
 // PROCESS LIBRARY
@@ -2936,11 +2941,19 @@ async function submitToSheet(isRetry) {
     // Stamp which device made this save — its own isolated single-cell write, appended
     // after Verified By/At (see DEVICE IDENTIFICATION above), so it can never misalign the
     // main data columns. Best-effort: a failure here must never block the real submission.
+    // keepalive:true matters here — without it, a plain fetch() can get silently dropped by
+    // the browser the instant the page navigates to the next screen (which happens almost
+    // immediately after a save on a phone), so this write would "fire" but never land. That
+    // was confirmed in production: every submitted row had a blank Device ID despite this
+    // code running every time — the self-verification check in Verify Reports depends on
+    // this column actually being populated, so a dropped write here is a real gap, not just
+    // a cosmetic one.
     if (rowNum) {
       const deviceCol = colLetter(SHEET_DATA_COLS + 3);
       fetch("/api/submit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        keepalive: true,
         body: JSON.stringify({ mode: "update", range: `${deviceCol}${rowNum}:${deviceCol}${rowNum}`, rows: [[S.operator || ""]] })
       }).catch(() => {});
     }
@@ -2957,6 +2970,7 @@ async function submitToSheet(isRetry) {
         fetch("/api/submit", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          keepalive: true,
           body: JSON.stringify({ mode: "update", range: `${startCol}${rowNum}:${endCol}${rowNum}`, rows: [braidCols] })
         }).catch(() => {});
       }
@@ -3671,7 +3685,8 @@ function rVrList() {
       // Self-verification is blocked by DEVICE, not by shop-floor Operator — "Operator" is
       // the OPERATORS-list worker who ran the process, which is a separate namespace from
       // the DEVICE_USERS person doing the preparing/verifying (see "Device ID" column).
-      const isOwn = r["Device ID"] && r["Device ID"] === S.vrName;
+      // Rishab (Admin) is exempt — see SELF_VERIFY_EXEMPT.
+      const isOwn = S.vrName !== SELF_VERIFY_EXEMPT && r["Device ID"] && r["Device ID"] === S.vrName;
       const prevThru = r["Verified Thru Process"] || null;
       const progressNote = prevThru
         ? `Previously verified thru Process ${prevThru} — new progress since then`
@@ -3703,7 +3718,7 @@ function rVrList() {
 function openVrDetail(rowNum) {
   const row = (S.vrRows || []).find(r => r.__row === rowNum);
   if (!row) { alert("Row not found — try refreshing the list."); return; }
-  if (row["Device ID"] && row["Device ID"] === S.vrName) {
+  if (S.vrName !== SELF_VERIFY_EXEMPT && row["Device ID"] && row["Device ID"] === S.vrName) {
     alert("You prepared this report — someone else needs to verify it.");
     return;
   }
@@ -3835,7 +3850,7 @@ function rVrDetail() {
 }
 
 async function verifyVrRow(rowNum, deviceId) {
-  if (deviceId && deviceId === S.vrName) {
+  if (S.vrName !== SELF_VERIFY_EXEMPT && deviceId && deviceId === S.vrName) {
     alert("You prepared this report — someone else needs to verify it.");
     return;
   }
@@ -3873,6 +3888,7 @@ async function verifyVrRow(rowNum, deviceId) {
     fetch("/api/submit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      keepalive: true,
       body: JSON.stringify({ mode: "update", range: `${verifierDeviceCol}${rowNum}:${verifierDeviceCol}${rowNum}`, rows: [[S.vrName || ""]] })
     }).catch(() => {});
 
@@ -3883,6 +3899,7 @@ async function verifyVrRow(rowNum, deviceId) {
       fetch("/api/submit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        keepalive: true,
         body: JSON.stringify({ mode: "update", range: `${verifiedThruCol}${rowNum}:${verifiedThruCol}${rowNum}`, rows: [[newThru]] })
       }).catch(() => {});
     }
