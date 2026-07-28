@@ -2732,8 +2732,16 @@ const SHEET_HEADERS = [
   "Braiding Photos","Supervisor","Finalised At","Crimp O.D. Measured (P120)","Batch No.",
   "Verified By","Verified At","Device ID","Verified Device ID",
   ...Array.from({length:18}, (_,i) => `BR-${String(i+1).padStart(2,"0")} Photo`),
-  "Verified Thru Process"
+  "Verified Thru Process",
+  "Hardness (P030)","Tensile (P030)","Button Weight (P030)","TS2 (P030)","TC90 (P030)",
+  "Pressure (P050)","Leakage (P060)","Pressure (P060)",
+  "O.D. Ring Die (P080)","Wire Cut (P080)","Appearance (P080)",
+  "Assembly (P100)","Appearance (P130)"
 ];
+// The 13 headers above (Hardness..Appearance P130) cover every remaining process that was
+// previously invisible to the Sheet — 030/050/060/080/100/130 — so partial, unfinalized
+// progress on them is now trackable the same way 040/090/120 already were. See
+// currentExtraProcessCols() for the windowed write and vrSheetValue() for the read mapping.
 // "Verified Thru Process" is a cumulative high-water mark, not a one-time stamp: it holds
 // the highest process number (e.g. "070") that had any data on it the last time someone
 // verified this row. verifyVrRow() only ever moves it forward — a verifier reviewing a row
@@ -2857,6 +2865,42 @@ function currentBraidPhotoCols() {
   });
 }
 
+// Values for the 13 checks that live on processes 030/050/060/080/100/130 — these were
+// never part of the original 43-column write (see SHEET_DATA_COLS) and are appended as
+// their own isolated columns after "Verified Thru Process", same pattern as the BR-XX photo
+// columns above, so no existing column position has to shift. Mirrors buildSheetRow()'s
+// windowing: any of these processes already reported in an earlier same-day save comes back
+// blank so a later save can never blank out data already committed to the Sheet.
+function currentExtraProcessCols() {
+  const rd = S.roundData[S.currentRound];
+  if (!rd) return Array.from({length:13}, () => "");
+
+  const procs = buildProcesses(S.product);
+  const procOrder = {};
+  procs.forEach((pr, i) => { procOrder[pr.no] = i; });
+  const reportedThru = S.reportedThroughIdx || 0;
+  const g = (no, key) => {
+    if ((procOrder[no] ?? 0) < reportedThru) return {};
+    return rd.entries[pkey(no, key)] || {};
+  };
+
+  return [
+    g("030","Hardness").label || "",
+    g("030","Tensile").label || "",
+    g("030","Button Weight").label || "",
+    g("030","TS2").label || "",
+    g("030","TC90").label || "",
+    g("050","Pressure").label || "",
+    g("060","Leakage").label || "",
+    g("060","Pressure").label || "",
+    g("080","O.D. (Ring Die)").label || "",
+    g("080","Wire Cut").label || "",
+    g("080","Appearance").label || "",
+    g("100","Assembly").label || "",
+    g("130","Appearance").label || ""
+  ];
+}
+
 // A row number cached in S.dayRowNum / the batch registry can go stale if someone deletes
 // or inserts rows directly in the Sheet UI (every row below the edit point shifts). Before
 // trusting a cached row number for an update, re-check it against a fresh read: if the row
@@ -2972,6 +3016,23 @@ async function submitToSheet(isRetry) {
           headers: { "Content-Type": "application/json" },
           keepalive: true,
           body: JSON.stringify({ mode: "update", range: `${startCol}${rowNum}:${endCol}${rowNum}`, rows: [braidCols] })
+        }).catch(() => {});
+      }
+    }
+
+    // The 13 previously-untracked checks (030/050/060/080/100/130) — isolated write, best
+    // effort, same reasoning as the braid-photo write above. Skipped entirely if there's
+    // nothing new to write.
+    if (rowNum) {
+      const extraCols = currentExtraProcessCols();
+      if (extraCols.some(v => v)) {
+        const startCol = colLetter(SHEET_DATA_COLS + 24);
+        const endCol   = colLetter(SHEET_DATA_COLS + 36);
+        fetch("/api/submit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          keepalive: true,
+          body: JSON.stringify({ mode: "update", range: `${startCol}${rowNum}:${endCol}${rowNum}`, rows: [extraCols] })
         }).catch(() => {});
       }
     }
@@ -3731,13 +3792,26 @@ function openVrDetail(rowNum) {
 // Sheet column -> (process, check) mapping, mirroring buildSheetRow()'s g() calls — only
 // these checks are captured in the current sheet schema; everything else shows as "—".
 function vrSheetValue(row, procNo, checkKey) {
+  if (procNo === "030" && checkKey === "Hardness")        return row["Hardness (P030)"] || "";
+  if (procNo === "030" && checkKey === "Tensile")         return row["Tensile (P030)"] || "";
+  if (procNo === "030" && checkKey === "Button Weight")   return row["Button Weight (P030)"] || "";
+  if (procNo === "030" && checkKey === "TS2")             return row["TS2 (P030)"] || "";
+  if (procNo === "030" && checkKey === "TC90")            return row["TC90 (P030)"] || "";
   if (procNo === "040" && checkKey === "O.D.")        return row["O.D. Measured"] || "";
   if (procNo === "040" && checkKey === "I.D.")        return row["I.D. Measured"] || "";
   if (procNo === "040" && checkKey === "Appearance")  return row["Appearance"] || "";
+  if (procNo === "050" && checkKey === "Pressure")        return row["Pressure (P050)"] || "";
+  if (procNo === "060" && checkKey === "Leakage")         return row["Leakage (P060)"] || "";
+  if (procNo === "060" && checkKey === "Pressure")        return row["Pressure (P060)"] || "";
+  if (procNo === "080" && checkKey === "O.D. (Ring Die)") return row["O.D. Ring Die (P080)"] || "";
+  if (procNo === "080" && checkKey === "Wire Cut")        return row["Wire Cut (P080)"] || "";
+  if (procNo === "080" && checkKey === "Appearance")      return row["Appearance (P080)"] || "";
   if (procNo === "090" && checkKey === "Length")      return row["Length"] || "";
   if (procNo === "090" && checkKey === "Wire Cut")    return row["Wire Cut"] || "";
   if (procNo === "090" && checkKey === "Appearance")  return row["Appearance (P090)"] || "";
+  if (procNo === "100" && checkKey === "Assembly")        return row["Assembly (P100)"] || "";
   if (procNo === "120" && checkKey === "Crimp O.D.")  return row["Crimp O.D. Measured (P120)"] || "";
+  if (procNo === "130" && checkKey === "Appearance")      return row["Appearance (P130)"] || "";
   return null; // not tracked in the sheet schema
 }
 function vrJudge(label) {
@@ -3756,16 +3830,12 @@ function highestFilledProcess(row, productKey) {
   if (!product) return null;
   const procs = buildProcesses(productKey);
 
-  // Only a subset of processes (currently 040/090/120, plus braiding) have their own
-  // tracked Sheet column — see vrSheetValue(). Processes like 030/050/060/080/100/130 are
-  // required and checked in the app but never had their values written to the Sheet, so
-  // scanning columns alone can never see them, even once genuinely finished. A finalised
-  // round is the one unambiguous exception: submitForVerification() refuses to set
-  // "Finalised At" until EVERY process — including the untracked ones — is complete, so
-  // that timestamp alone is proof the round reached the true last process, not just the
-  // last tracked one. Without this, a finished round would incorrectly cap out at whatever
-  // the last tracked process is (120), permanently blocking every other shift capped
-  // against it from ever reaching further.
+  // Every process (030 through 130, plus braiding) now has its own tracked Sheet column —
+  // see vrSheetValue() and currentExtraProcessCols() — so scanning columns alone sees
+  // partial, unfinalized progress on all of them, not just 040/090/120 as before. The
+  // "Finalised At" short-circuit below is kept as a safety net for rows submitted before
+  // this expansion (030/050/060/080/100/130 will permanently read blank on those older
+  // rows even though the round genuinely finished) and is otherwise harmless going forward.
   if (row["Finalised At"]) return procs.length ? procs[procs.length - 1].no : null;
 
   let highest = null;
