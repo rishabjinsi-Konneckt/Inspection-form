@@ -2525,6 +2525,13 @@ function navNext() {
   const proc  = procs[S.processIdx];
   if (!S.procOperators[proc.no]) { alert("Please select an operator for this process."); return; }
 
+  // Every check in THIS process must actually be recorded (a real reading or an explicit
+  // No Run) before moving on — selecting an operator alone isn't enough. Without this, it
+  // was possible to tap through an entire process with nothing entered and only find out
+  // at final submission (submitForVerification() already enforces this same rule there),
+  // by which point a verifier could be looking at a process that was silently skipped.
+  if (!isProcDone(proc)) { alert("Please complete every reading for this process before moving on (or mark it No Run if applicable)."); return; }
+
   // Every shift EXCEPT Approval Sample is capped at wherever Approval Sample's own
   // verification currently stands — see enforceShiftGate()/approvalSampleVerifiedThru().
   // This only blocks moving FURTHER; anything already recorded stays exactly as it is.
