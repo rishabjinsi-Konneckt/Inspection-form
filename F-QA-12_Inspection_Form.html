@@ -3801,7 +3801,17 @@ function openVrDetail(rowNum) {
   }
   S.vrDetailRow = row;
   S.vrJustVerified = false;
+  S.vrApprovals = {}; // per-process Approve/Not Approve state for THIS review pass — see rVrDetail()/setVrApproval()
   S.screen = "vrdetail";
+  render();
+}
+
+// Records the verifier's Approve/Not Approve choice for one process on the review screen.
+// Keyed by process number, reset fresh every time a row is opened (see openVrDetail()) so a
+// stale choice from a previous row's review can never leak into this one.
+function setVrApproval(procNo, approved) {
+  if (!S.vrApprovals) S.vrApprovals = {};
+  S.vrApprovals[procNo] = approved;
   render();
 }
 
@@ -3883,12 +3893,17 @@ function rVrDetail() {
   // actually for. See highestFilledProcess()/"Verified Thru Process".
   const prevThru = row["Verified Thru Process"] || null;
   const prevThruIdx = prevThru ? procs.findIndex(p => p.no === prevThru) : -1;
+  if (!S.vrApprovals) S.vrApprovals = {};
+
+  // Every process actually shown as 🆕 New (i.e. has something on this row to review) needs
+  // an explicit Approve tap before verification is allowed — see the button block below.
+  // Already-verified processes are just shown for reference; nothing to decide there.
+  const newProcNos = [];
 
   const rows = procs.map((proc, procIdx) => {
     const isNew = procIdx > prevThruIdx;
-    const stageTag = isNew
-      ? `<span class="badge b-na" style="background:#faf5ff;color:#7c3aed;">🆕 New</span>`
-      : `<span class="badge b-na" style="opacity:.6;">✓ Already verified</span>`;
+
+    let detailHtml;
     if (proc.type === "braiding") {
       const n = product.braiding.machines;
       const vals = Array.from({length:n}, (_,i) => row[`BR-${String(i+1).padStart(2,"0")} O.D.`]).filter(Boolean);
@@ -3897,29 +3912,57 @@ function rVrDetail() {
       const allNoRun = vals.every(v => v === "No Run");
       const cls = allNoRun ? "b-na" : anyFail ? "b-ng" : "b-ok";
       const lbl = allNoRun ? "No Run" : anyFail ? "NG" : "OK";
-      return `<div class="ver-row" style="${isNew?"":"opacity:.55;"}">
+      detailHtml = `<div class="ver-row" style="${isNew?"":"opacity:.55;"}">
         <div class="ver-info">
-          <div class="sum-proc">Process ${proc.no} ${stageTag}</div>
           <div class="sum-char">Wire Braiding</div>
           <div class="sum-obs">${esc(vals.join(", "))}</div>
         </div>
         <span class="badge ${cls}">${lbl}</span>
       </div>`;
+    } else {
+      detailHtml = proc.checks.map(c => {
+        const val = vrSheetValue(row, proc.no, c.key);
+        if (val === null) return "";
+        const j = vrJudge(val);
+        return `<div class="ver-row" style="${isNew?"":"opacity:.55;"}">
+          <div class="ver-info">
+            <div class="sum-char">${esc(c.key)}</div>
+            <div class="sum-obs">Spec: ${esc(c.spec||"—")}</div>
+          </div>
+          <span class="badge ${j.cls}">${j.lbl} · ${esc(val||"—")}</span>
+        </div>`;
+      }).join("");
+      if (!detailHtml) return "";
     }
-    return proc.checks.map(c => {
-      const val = vrSheetValue(row, proc.no, c.key);
-      if (val === null) return "";
-      const j = vrJudge(val);
-      return `<div class="ver-row" style="${isNew?"":"opacity:.55;"}">
-        <div class="ver-info">
-          <div class="sum-proc">Process ${proc.no} · ${esc(proc.machine)} ${stageTag}</div>
-          <div class="sum-char">${esc(c.key)}</div>
-          <div class="sum-obs">Spec: ${esc(c.spec||"—")}</div>
-        </div>
-        <span class="badge ${j.cls}">${j.lbl} · ${esc(val||"—")}</span>
+
+    if (!isNew) {
+      return `<div style="margin-bottom:10px;">
+        <div class="sum-proc">Process ${proc.no} · ${esc(proc.machine)} <span class="badge b-na" style="opacity:.6;">✓ Already verified</span></div>
+        ${detailHtml}
       </div>`;
-    }).join("");
+    }
+
+    newProcNos.push(proc.no);
+    const state = S.vrApprovals[proc.no]; // true = Approved, false = Not Approved, undefined = undecided
+    return `<div style="margin-bottom:10px;border:1px solid #e9d5ff;border-radius:10px;padding:10px 12px;background:#faf5ff;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
+        <div class="sum-proc">Process ${proc.no} · ${esc(proc.machine)} <span class="badge b-na" style="background:#fff;color:#7c3aed;">🆕 New</span></div>
+        <div style="display:flex;gap:6px;">
+          <button type="button" onclick="setVrApproval('${proc.no}', true)"
+            style="padding:6px 12px;border-radius:8px;border:1.5px solid ${state===true?"#16a34a":"#cbd5e1"};background:${state===true?"#dcfce7":"#fff"};color:${state===true?"#15803d":"#475569"};font-size:12px;font-weight:700;cursor:pointer;">✓ Approve</button>
+          <button type="button" onclick="setVrApproval('${proc.no}', false)"
+            style="padding:6px 12px;border-radius:8px;border:1.5px solid ${state===false?"#dc2626":"#cbd5e1"};background:${state===false?"#fee2e2":"#fff"};color:${state===false?"#b91c1c":"#475569"};font-size:12px;font-weight:700;cursor:pointer;">✗ Not Approve</button>
+        </div>
+      </div>
+      ${detailHtml}
+    </div>`;
   }).join("");
+
+  // Verifying is only allowed once every 🆕 New process above has been explicitly tapped
+  // Approve — "Not Approve" and "undecided" both block it, same as we discussed: this is a
+  // hard gate, not a partial/out-of-order verification (that would need a bigger data model
+  // change, since "Verified Thru Process" is still a single cumulative high-water mark).
+  const canVerify = newProcNos.length > 0 && newProcNos.every(no => S.vrApprovals[no] === true);
 
   const confirmBlock = S.vrJustVerified ? `
     <div class="alert green" style="margin-bottom:14px;">✅ Verified by <strong>${esc(S.vrName)}</strong> thru Process ${esc(row["Verified Thru Process"]||"—")} · ${esc(row["Verified At"]||"")}</div>
@@ -3929,8 +3972,11 @@ function rVrDetail() {
     </div>` : `
     <div class="nav-row no-print">
       <button class="btn-back" onclick="S.screen='vrlist';render()">← Back</button>
-      <button class="btn-next purple" onclick="verifyVrRow(${row.__row}, '${esc(row["Device ID"]||"")}')">✓ Verify New Progress</button>
-    </div>`;
+      <button class="btn-next purple" ${canVerify ? "" : "disabled"}
+        style="${canVerify ? "" : "opacity:.5;cursor:not-allowed;"}"
+        onclick="verifyVrRow(${row.__row}, '${esc(row["Device ID"]||"")}')">✓ Verify Approved Progress</button>
+    </div>
+    ${newProcNos.length && !canVerify ? `<div style="font-size:12px;color:#7c3aed;text-align:center;margin-top:6px;">Tap "✓ Approve" on every 🆕 New process above before you can verify.</div>` : ""}`;
 
   return `
     <div class="header sup"><h1>🔍 Review Before Verifying</h1><p>${prevThru ? `Previously verified thru Process ${prevThru} — review the 🆕 New items below` : "Go through every entry, then verify"}</p></div>
@@ -3942,6 +3988,8 @@ function rVrDetail() {
         <div class="meta-item"><div class="meta-lbl">Prepared By (Device ID)</div><div class="meta-val">${esc(row["Device ID"]||row.Operator||"—")}</div></div>
         <div class="meta-item"><div class="meta-lbl">Shift</div><div class="meta-val">${esc(row["Shift / Sample"])}</div></div>
         <div class="meta-item"><div class="meta-lbl">Finalised</div><div class="meta-val" style="font-size:12px;">${esc(row["Finalised At"]||"not yet")}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Verified By</div><div class="meta-val">${esc(row["Verified By"]||"—")}</div></div>
+        <div class="meta-item"><div class="meta-lbl">Verified Device ID</div><div class="meta-val">${esc(row["Verified Device ID"]||"—")}</div></div>
       </div>
       ${rows || `<div style="text-align:center;padding:16px;color:#94a3b8;font-size:13px;">No tracked readings on this row yet.</div>`}
     </div>
@@ -3974,9 +4022,12 @@ async function verifyVrRow(rowNum, deviceId) {
     S.vrRows = (S.vrRows || []).filter(r => r.__row !== rowNum);
     if (S.vrDetailRow) {
       S.vrDetailRow["Verified At"] = verifiedAt;
+      S.vrDetailRow["Verified By"] = S.vrName;
+      S.vrDetailRow["Verified Device ID"] = S.vrName;
       S.vrDetailRow["Verified Thru Process"] = newThru;
     }
     S.vrJustVerified = true;
+    S.vrApprovals = {}; // this pass is done — a future re-open of this row starts clean
     render();
 
     // Stamp which device verified this row — kept in its OWN column, never sharing a range
