@@ -2536,9 +2536,18 @@ function navNext() {
   // verification currently stands — see enforceShiftGate()/approvalSampleVerifiedThru().
   // This only blocks moving FURTHER; anything already recorded stays exactly as it is.
   if (S.currentRound !== 0) {
-    const capNo  = approvalSampleVerifiedThru();
-    const capIdx = capNo ? procs.findIndex(p => p.no === capNo) : -1;
-    if (S.processIdx >= capIdx) {
+    const capNo     = approvalSampleVerifiedThru();
+    const capIdx    = capNo ? procs.findIndex(p => p.no === capNo) : -1;
+    const isLastProc = S.processIdx === procs.length - 1;
+    // Process 130 (the last process) has no "further" to move past — the only next screen
+    // is Review, which is finishing your OWN round, not starting a new process beyond the
+    // cap. So when the shift is sitting exactly at (or before) the cap on the LAST process,
+    // finishing it must always be allowed, even though S.processIdx === capIdx there. Every
+    // other transition — starting a genuinely new mid-pipeline process beyond the cap —
+    // keeps the original >= block untouched.
+    const atOrBeforeCap = capIdx >= 0 && S.processIdx <= capIdx;
+    const blocked = isLastProc ? !atOrBeforeCap : S.processIdx >= capIdx;
+    if (blocked) {
       alert(capNo
         ? `This shift can't move past Process ${proc.no} yet — Approval Sample has only been verified through Process ${capNo}. Check back once that moves further (tap "↻ refresh" on Setup to pull the latest).`
         : `This shift can't proceed yet — Approval Sample hasn't been verified at all today. Check back once at least part of it has been verified.`);
