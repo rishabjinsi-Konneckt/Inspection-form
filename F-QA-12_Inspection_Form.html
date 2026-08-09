@@ -1752,7 +1752,11 @@ function sheetRoundSummary(rowsForRound) {
   if (!rowsForRound || !rowsForRound.length) return null;
   const last = rowsForRound[rowsForRound.length - 1];
   return {
-    complete: rowsForRound.some(r => !!r["Finalised At"]),
+    // Only the MOST RECENT day's row decides whether this round is "closed" right now — a
+    // round finalised on an earlier day doesn't stay locked forever; it just means that
+    // day's pass is done. A genuinely new day starts a fresh pass at the same shift (see
+    // continueBatch()'s finalisedToday/startingFreshDay handling).
+    complete: !!last["Finalised At"],
     lastDate: last.Date || "",
     rowNum:   last.__row,
     verifiedThru: last["Verified Thru Process"] || null
@@ -2131,12 +2135,20 @@ function continueBatch() {
     return;
   }
 
-  if (roundInfo && roundInfo.complete) {
-    alert(`The "${S.shift}" shift for batch ${base} is already finalised.`);
+  const todayStr = today();
+
+  // A round finalised on an EARLIER day isn't locked forever — see sheetRoundSummary(),
+  // which now only looks at the most recent row. Only block reopening it if it was
+  // finalised specifically TODAY (nothing left to do, and reopening risks overwriting an
+  // already-signed-off row). A round finalised on a past day, selected again on a genuinely
+  // new day, starts a brand-new pass at that same shift instead — see startingFreshDay below.
+  const finalisedToday = !!(roundInfo && roundInfo.complete && roundInfo.lastDate === todayStr);
+  if (finalisedToday) {
+    alert(`The "${S.shift}" shift for batch ${base} is already finalised for today.`);
     return;
   }
+  const startingFreshDay = !!(roundInfo && roundInfo.complete && roundInfo.lastDate !== todayStr);
 
-  const todayStr    = today();
   const batchSameDay = info.lastDate === todayStr;
 
   S.product   = info.product;
@@ -2147,7 +2159,18 @@ function continueBatch() {
   S.batchNo   = S.batchDay <= 1 ? base : `${base}-${S.batchDay}`;
   S.currentRound = roundIdx;
 
-  if (roundInfo && !roundInfo.knownLocally && roundInfo.sheetRows && roundInfo.sheetRows.length) {
+  if (startingFreshDay) {
+    // The previous day's pass at this shift is done and already signed off — this is a new,
+    // independent inspection for it, not a resume. Clear out any of THIS round's data still
+    // sitting in memory/localStorage from that earlier finalised day (on this same device)
+    // so old answers can't silently pre-fill what's supposed to be a fresh day's readings.
+    // Start at Process 1, and never touch the old row — a new row gets appended once this
+    // saves, same as any other new day of an existing batch.
+    S.roundData[roundIdx] = emptyRound();
+    S.processIdx = 0;
+    S.reportedThroughIdx = 0;
+    S.dayRowNum = null;
+  } else if (roundInfo && !roundInfo.knownLocally && roundInfo.sheetRows && roundInfo.sheetRows.length) {
     // This device has never worked on this round — there's no local resume point, but the
     // Sheet already has whatever was captured for it from wherever it WAS worked on. Rebuild
     // that into this round's entries and resume right after the last process it covers.
