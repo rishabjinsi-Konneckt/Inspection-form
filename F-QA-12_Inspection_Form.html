@@ -3021,58 +3021,64 @@ async function submitToSheet(isRetry) {
       });
     }
 
-    // Stamp which device made this save — its own isolated single-cell write, appended
-    // after Verified By/At (see DEVICE IDENTIFICATION above), so it can never misalign the
-    // main data columns. Best-effort: a failure here must never block the real submission.
-    // keepalive:true matters here — without it, a plain fetch() can get silently dropped by
-    // the browser the instant the page navigates to the next screen (which happens almost
-    // immediately after a save on a phone), so this write would "fire" but never land. That
-    // was confirmed in production: every submitted row had a blank Device ID despite this
-    // code running every time — the self-verification check in Verify Reports depends on
-    // this column actually being populated, so a dropped write here is a real gap, not just
-    // a cosmetic one.
+    // Stamp which device made this save, write the per-machine braiding photos (BR-01..BR-18),
+    // and write the 13 previously-untracked checks (030/050/060/080/100/130) — three separate
+    // isolated column ranges, same reasoning as before (each its own write so none can
+    // misalign the main data columns). These USED to be fire-and-forget (`fetch(...).catch(()
+    // => {})`, never awaited) on the theory that keepalive:true was enough to let them survive
+    // a screen change. In production that theory was wrong: real submitted rows kept coming
+    // back with blank Device ID, blank BR-XX Photo columns, and all 13 extra-check columns
+    // empty — exactly these three writes, every time, while the one write the code actually
+    // awaits (the main row) always landed. So now every one of these is awaited (via
+    // Promise.allSettled, so one failing doesn't cancel the others) before the save is
+    // considered "done" — slower by a fraction of a second, but the data actually lands.
+    const followUps = [];
     if (rowNum) {
       const deviceCol = colLetter(SHEET_DATA_COLS + 3);
-      fetch("/api/submit", {
+      followUps.push(fetch("/api/submit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         keepalive: true,
         body: JSON.stringify({ mode: "update", range: `${deviceCol}${rowNum}:${deviceCol}${rowNum}`, rows: [[S.operator || ""]] })
-      }).catch(() => {});
+      }));
     }
 
-    // Per-machine braiding photos (BR-01..BR-18), each in its own dedicated column after
-    // Verified Device ID — isolated write, best-effort, never blocks the real submission.
-    // Skipped entirely if there's nothing to write (also naturally true when this round's
-    // braiding step was already reported in an earlier same-day save).
     if (rowNum) {
       const braidCols = currentBraidPhotoCols();
       if (braidCols.some(v => v)) {
         const startCol = colLetter(SHEET_DATA_COLS + 5);
         const endCol   = colLetter(SHEET_DATA_COLS + 22);
-        fetch("/api/submit", {
+        followUps.push(fetch("/api/submit", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           keepalive: true,
           body: JSON.stringify({ mode: "update", range: `${startCol}${rowNum}:${endCol}${rowNum}`, rows: [braidCols] })
-        }).catch(() => {});
+        }));
       }
     }
 
-    // The 13 previously-untracked checks (030/050/060/080/100/130) — isolated write, best
-    // effort, same reasoning as the braid-photo write above. Skipped entirely if there's
-    // nothing new to write.
     if (rowNum) {
       const extraCols = currentExtraProcessCols();
       if (extraCols.some(v => v)) {
         const startCol = colLetter(SHEET_DATA_COLS + 24);
         const endCol   = colLetter(SHEET_DATA_COLS + 36);
-        fetch("/api/submit", {
+        followUps.push(fetch("/api/submit", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           keepalive: true,
           body: JSON.stringify({ mode: "update", range: `${startCol}${rowNum}:${endCol}${rowNum}`, rows: [extraCols] })
-        }).catch(() => {});
+        }));
+      }
+    }
+
+    if (followUps.length) {
+      const results = await Promise.allSettled(followUps);
+      const failed = results.filter(r => r.status === "rejected" || (r.value && !r.value.ok));
+      if (failed.length) {
+        // Don't fail the whole save over this — the main row is already safely committed —
+        // but do surface it instead of swallowing it silently like before, so a real network
+        // problem here is at least visible instead of quietly losing QA data again.
+        console.warn(`${failed.length} of ${followUps.length} follow-up column writes may not have landed for row ${rowNum}.`);
       }
     }
 
@@ -4049,33 +4055,47 @@ async function verifyVrRow(rowNum, deviceId) {
       S.vrDetailRow["Verified Device ID"] = S.vrName;
       S.vrDetailRow["Verified Thru Process"] = newThru;
     }
-    S.vrJustVerified = true;
-    S.vrApprovals = {}; // this pass is done — a future re-open of this row starts clean
-    render();
-
-    // Stamp which device verified this row — kept in its OWN column, never sharing a range
-    // with the operator's Device ID above, so verifying a row can never overwrite the
-    // record of which device originally prepared it. Best-effort, same as the operator-side
-    // stamp: never allowed to fail the actual verification.
+    // Stamp which device verified this row, and extend the cumulative "Verified Thru
+    // Process" high-water mark — each its own isolated column write, same reasoning as
+    // submitToSheet(): these used to be fire-and-forget AFTER render() (so the user could
+    // navigate away before they landed), which is the same race that was silently dropping
+    // Device ID / extra-process data on the operator side. Awaited here too, before
+    // vrJustVerified flips the screen to "done," so the verifier can't leave before these
+    // are confirmed saved.
+    const followUps = [];
     const verifierDeviceCol = colLetter(SHEET_DATA_COLS + 4);
-    fetch("/api/submit", {
+    followUps.push(fetch("/api/submit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       keepalive: true,
       body: JSON.stringify({ mode: "update", range: `${verifierDeviceCol}${rowNum}:${verifierDeviceCol}${rowNum}`, rows: [[S.vrName || ""]] })
-    }).catch(() => {});
+    }));
 
-    // Extend the cumulative "Verified Thru Process" high-water mark — its own isolated
-    // column, best-effort, same pattern as above.
     if (newThru) {
       const verifiedThruCol = colLetter(SHEET_DATA_COLS + 23);
-      fetch("/api/submit", {
+      followUps.push(fetch("/api/submit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         keepalive: true,
         body: JSON.stringify({ mode: "update", range: `${verifiedThruCol}${rowNum}:${verifiedThruCol}${rowNum}`, rows: [[newThru]] })
-      }).catch(() => {});
+      }));
     }
+    const results = await Promise.allSettled(followUps);
+    const failed = results.filter(r => r.status === "rejected" || (r.value && !r.value.ok));
+    if (failed.length) {
+      console.warn(`${failed.length} of ${followUps.length} verify follow-up column writes may not have landed for row ${rowNum}.`);
+    }
+
+    S.vrRows = (S.vrRows || []).filter(r => r.__row !== rowNum);
+    if (S.vrDetailRow) {
+      S.vrDetailRow["Verified At"] = verifiedAt;
+      S.vrDetailRow["Verified By"] = S.vrName;
+      S.vrDetailRow["Verified Device ID"] = S.vrName;
+      S.vrDetailRow["Verified Thru Process"] = newThru;
+    }
+    S.vrJustVerified = true;
+    S.vrApprovals = {}; // this pass is done — a future re-open of this row starts clean
+    render();
   } catch (err) {
     alert("Couldn't save verification: " + err.message);
   }

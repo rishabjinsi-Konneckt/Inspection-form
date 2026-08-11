@@ -16,7 +16,7 @@ module.exports = async function handler(req, res) {
     // query param qualifies the range with a tab name (e.g. "PINs"), so this same
     // endpoint can also read small side-tables like the PINs tab without disturbing the
     // default behavior every existing caller (Inspection Log, Verify Reports) relies on.
-    const range = sheet ? `${sheet}!A1:Z1000` : 'A1:BZ5000';
+    const range = sheet ? `${sheet}!A1:Z1000` : 'A1:CZ5000';
 
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(range)}`;
     const apiRes = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
