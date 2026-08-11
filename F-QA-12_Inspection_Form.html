@@ -2761,48 +2761,114 @@ function hasNewProgressToReport() {
 // ═══════════════════════════════════════════════
 // MASTER SHEET SCHEMA — shared by xlsx export & Google Sheets submission
 // ═══════════════════════════════════════════════
+// Laid out in two blocks, in actual process-flow order (030→040→050→060→070→080→090→
+// 100→120→130), replacing the old layout where columns were bolted on at the end in
+// whatever order each feature was added over time (main 43, then Verified By/At/Device
+// ID, then 18 BR photo cols, then Verified Thru Process, then the 13 "extra" checks) —
+// which made both the raw Sheet and the code's column math hard to follow.
+//
+// BLOCK A (columns 1..SHEET_DATA_COLS) — everything the OPERATOR's save ever writes,
+// written as ONE atomic range in submitToSheet(). This used to be up to 4 separate
+// fire-and-forget requests (main row + Device ID + BR-XX photos + the 13 extra checks);
+// that fragmentation is exactly what caused real data loss in production (see the
+// 2026-08-11 incident: Device ID and 12 of the 13 extra checks came back blank on
+// submitted, finalised, even verified rows, because those follow-up requests fired but
+// were never awaited, so the app moved on before confirming they'd landed). Collapsing
+// to a single awaited write removes that failure mode instead of just patching around it.
+//
+// BLOCK B (columns SHEET_DATA_COLS+1..end) — everything the separate, cross-device
+// Verify Reports flow writes, in verifyVrRow(). Kept in its own block, never overlapping
+// Block A, so an operator's save and a verifier's save (possibly from different devices,
+// possibly minutes or days apart) can never collide or overwrite each other.
 const SHEET_HEADERS = [
-  "Date","Product","Shift / Sample","Operator",
-  "O.D. Spec","O.D. Measured","I.D. Spec","I.D. Measured","Appearance",
-  ...Array.from({length:18}, (_,i) => `BR-${String(i+1).padStart(2,"0")} O.D.`),
-  "Length","Wire Cut","Appearance (P090)",
-  "O.D. Photo","I.D. Photo","Pressure Photo (P050)","Length Photo (P090)",
-  "Crimp O.D. Photo (P120)","Pressure Testing Photo (P120)","Fitting Load Test Photo (P120)","Air Leakage Photo (P120)",
-  "Braiding Photos","Supervisor","Finalised At","Crimp O.D. Measured (P120)","Batch No.",
-  "Verified By","Verified At","Device ID","Verified Device ID",
-  ...Array.from({length:18}, (_,i) => `BR-${String(i+1).padStart(2,"0")} Photo`),
-  "Verified Thru Process",
+  // ── meta ──
+  "Date","Product","Batch No.","Shift / Sample","Operator","Device ID","Supervisor","Finalised At",
+  // ── 030 Mixing Mill ──
   "Hardness (P030)","Tensile (P030)","Button Weight (P030)","TS2 (P030)","TC90 (P030)",
-  "Pressure (P050)","Leakage (P060)","Pressure (P060)",
+  // ── 040 Rubber Extruder ──
+  "O.D. Spec","O.D. Measured","O.D. Photo","I.D. Spec","I.D. Measured","I.D. Photo","Appearance",
+  // ── 050 Vulcanizer ──
+  "Pressure (P050)","Pressure Photo (P050)",
+  // ── 060 Air Compressor ──
+  "Leakage (P060)","Pressure (P060)",
+  // ── 070 Wire Braiding — each machine's O.D. reading, then its own photo, then the
+  // legacy packed "Braiding Photos" cell kept for backward compatibility with rows
+  // submitted before per-machine photo columns existed ──
+  ...Array.from({length:18}, (_,i) => `BR-${String(i+1).padStart(2,"0")} O.D.`),
+  ...Array.from({length:18}, (_,i) => `BR-${String(i+1).padStart(2,"0")} Photo`),
+  "Braiding Photos",
+  // ── 080 Bundle Counter ──
   "O.D. Ring Die (P080)","Wire Cut (P080)","Appearance (P080)",
-  "Assembly (P100)","Appearance (P130)"
+  // ── 090 Cutting Machine ──
+  "Length","Length Photo (P090)","Wire Cut","Appearance (P090)",
+  // ── 100 Manual / Fitting ──
+  "Assembly (P100)",
+  // ── 120 Crimping ──
+  "Crimp O.D. Measured (P120)","Crimp O.D. Photo (P120)","Pressure Testing Photo (P120)","Fitting Load Test Photo (P120)","Air Leakage Photo (P120)",
+  // ── 130 Final Appearance ──
+  "Appearance (P130)",
+  // ── Block B: Verify Reports only, see above ──
+  "Verified By","Verified At","Verified Device ID","Verified Thru Process"
 ];
-// The 13 headers above (Hardness..Appearance P130) cover every remaining process that was
-// previously invisible to the Sheet — 030/050/060/080/100/130 — so partial, unfinalized
-// progress on them is now trackable the same way 040/090/120 already were. See
-// currentExtraProcessCols() for the windowed write and vrSheetValue() for the read mapping.
-// "Verified Thru Process" is a cumulative high-water mark, not a one-time stamp: it holds
-// the highest process number (e.g. "070") that had any data on it the last time someone
-// verified this row. verifyVrRow() only ever moves it forward — a verifier reviewing a row
-// again later is reviewing just the NEW processes since this value, not redoing the whole
-// row. See highestFilledProcess() and loadVrList().
-// The legacy "Braiding Photos" column (packed "BR-01: url; BR-02: url; ..." single cell)
-// is kept exactly as-is for backward compatibility with historical rows — reflowing/removing
-// a column in the middle of a live sheet with existing data is too risky. The 18 columns
-// below give each machine its own dedicated photo cell going forward; see
-// currentBraidPhotoCols() and its isolated write in submitToSheet().
-// Number of DATA columns the operator's own writes ever touch (through "Batch No.").
-// "Verified By"/"Verified At" are appended afterward and are only ever written by the
-// separate, cross-device Verify Reports flow — kept out of this range so the two sides
-// can never overwrite each other. A1=col1 ... "Batch No." is the 43rd column = AQ.
-// Columns 46/47 ("Device ID"/"Verified Device ID") follow the same isolation pattern —
-// each is its own single-cell write (see verifyDevicePin(), submitToSheet(), verifyVrRow()),
-// so neither can collide with the main data write or with each other.
-const SHEET_DATA_COLS = 43;
+// Number of columns in Block A (the operator's single atomic write). Everything from here
+// to the end of SHEET_HEADERS is Block B (Verify Reports' single atomic write).
+const SHEET_DATA_COLS = 75;
 function colLetter(n) { // 1-indexed column number -> spreadsheet letter(s)
   let s = "";
   while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); }
   return s;
+}
+
+// Builds one full Block-A row (all SHEET_DATA_COLS columns, in the exact SHEET_HEADERS
+// order above) from a round's entries. Shared by buildSheetRows() (all rounds, unwindowed,
+// for xlsx export) and buildSheetRow() (current round only, windowed for Sheet submission)
+// below — this is the single source of truth for "what goes in which column" now, instead
+// of that logic being duplicated (and able to drift out of sync) across four separate
+// functions the way it used to be.
+function buildBlockARow(p, rd, shiftLabel, windowed) {
+  const g = windowed || ((no, key) => rd.entries[pkey(no, key)] || {});
+  const brLabels = Array.from({length:18}, (_, bi) => {
+    const m = `BR-${String(bi+1).padStart(2,"0")}`;
+    return (rd.braiding[m] && rd.braiding[m].label) || "";
+  });
+  const brPhotos = Array.from({length:18}, (_, bi) => {
+    const m = `BR-${String(bi+1).padStart(2,"0")}`;
+    return (rd.braiding[m] && rd.braiding[m].photo) || "";
+  });
+  const braidPhotosLegacy = Object.keys(rd.braiding)
+    .filter(m => rd.braiding[m] && rd.braiding[m].photo)
+    .map(m => `${m}: ${rd.braiding[m].photo}`)
+    .join("; ");
+
+  return [
+    // meta
+    S.date, p.label, S.batchNo || "", shiftLabel, S.procOperators["040"] || S.operator,
+    S.operator || "", S.supName, S.finalisedAt,
+    // 030
+    g("030","Hardness").label || "", g("030","Tensile").label || "", g("030","Button Weight").label || "",
+    g("030","TS2").label || "", g("030","TC90").label || "",
+    // 040
+    p.extruder.od, g("040","O.D.").label || "", g("040","O.D.").photo || "",
+    p.extruder.id, g("040","I.D.").label || "", g("040","I.D.").photo || "",
+    g("040","Appearance").label || "",
+    // 050
+    g("050","Pressure").label || "", g("050","Pressure").photo || "",
+    // 060
+    g("060","Leakage").label || "", g("060","Pressure").label || "",
+    // 070
+    ...brLabels, ...brPhotos, braidPhotosLegacy,
+    // 080
+    g("080","O.D. (Ring Die)").label || "", g("080","Wire Cut").label || "", g("080","Appearance").label || "",
+    // 090
+    g("090","Length").label || "", g("090","Length").photo || "", g("090","Wire Cut").label || "", g("090","Appearance").label || "",
+    // 100
+    g("100","Assembly").label || "",
+    // 120
+    g("120","Crimp O.D.").label || "", g("120","Crimp O.D.").photo || "", g("120","Pressure Testing").photo || "",
+    g("120","Fitting Load Test").photo || "", g("120","Air Leakage").photo || "",
+    // 130
+    g("130","Appearance").label || ""
+  ];
 }
 
 // Local/export snapshot — shows the FULL current picture across all rounds, unwindowed.
@@ -2812,31 +2878,15 @@ function buildSheetRows() {
   if (!p) return [];
   return S.roundData.map((rd, i) => {
     if (!rd || !Object.keys(rd.entries).length) return null;
-    const g = (no, key) => rd.entries[pkey(no, key)] || {};
-    const brCols = Array.from({length:18}, (_, bi) => {
-      const m = `BR-${String(bi+1).padStart(2,"0")}`;
-      return (rd.braiding[m] && rd.braiding[m].label) || "";
-    });
-    const braidPhotos = Object.keys(rd.braiding)
-      .filter(m => rd.braiding[m] && rd.braiding[m].photo)
-      .map(m => `${m}: ${rd.braiding[m].photo}`)
-      .join("; ");
-    return [
-      S.date, p.label, ROUND_LABELS[i], S.procOperators["040"] || S.operator,
-      p.extruder.od, g("040","O.D.").label || "",
-      p.extruder.id, g("040","I.D.").label || "",
-      g("040","Appearance").label || "",
-      ...brCols,
-      g("090","Length").label || "", g("090","Wire Cut").label || "", g("090","Appearance").label || "",
-      g("040","O.D.").photo || "", g("040","I.D.").photo || "", g("050","Pressure").photo || "", g("090","Length").photo || "",
-      g("120","Crimp O.D.").photo || "", g("120","Pressure Testing").photo || "", g("120","Fitting Load Test").photo || "", g("120","Air Leakage").photo || "",
-      braidPhotos, S.supName, S.finalisedAt, g("120","Crimp O.D.").label || "", S.batchNo || ""
-    ];
+    return buildBlockARow(p, rd, ROUND_LABELS[i]);
   }).filter(Boolean);
 }
 
 // Sheet-submission row — CURRENT round only, windowed to just what's new since the last
 // save (pause or finalise) for this round, so a same-day update never re-writes stale data.
+// Produces the FULL Block A row (meta + every process 030..130, data and photos alike) in
+// one array — submitToSheet() writes this as a single atomic range, replacing what used to
+// be the main row plus three separate best-effort follow-up writes.
 function buildSheetRow() {
   const p = PRODUCTS[S.product];
   if (!p) return null;
@@ -2855,89 +2905,13 @@ function buildSheetRow() {
     if ((procOrder[no] ?? 0) < reportedThru) return {};
     return rd.entries[pkey(no, key)] || {};
   };
-  const brCols = Array.from({length:18}, (_, bi) => {
-    if (braidWindowedOut) return "";
-    const m = `BR-${String(bi+1).padStart(2,"0")}`;
-    return (rd.braiding[m] && rd.braiding[m].label) || "";
-  });
-  const braidPhotos = braidWindowedOut ? "" : Object.keys(rd.braiding)
-    .filter(m => rd.braiding[m] && rd.braiding[m].photo)
-    .map(m => `${m}: ${rd.braiding[m].photo}`)
-    .join("; ");
+  // Windowed copy of rd for the braiding block, so buildBlockARow's brLabels/brPhotos/
+  // braidPhotosLegacy come back blank too when braiding was already reported earlier today
+  // — same behavior as before, just expressed through the shared builder instead of a
+  // separate braidWindowedOut branch duplicated in three places.
+  const rdForBraid = braidWindowedOut ? { entries: rd.entries, braiding: {} } : rd;
 
-  return [
-    S.date, p.label, ROUND_LABELS[S.currentRound], S.procOperators["040"] || S.operator,
-    p.extruder.od, g("040","O.D.").label || "",
-    p.extruder.id, g("040","I.D.").label || "",
-    g("040","Appearance").label || "",
-    ...brCols,
-    g("090","Length").label || "", g("090","Wire Cut").label || "", g("090","Appearance").label || "",
-    g("040","O.D.").photo || "", g("040","I.D.").photo || "", g("050","Pressure").photo || "", g("090","Length").photo || "",
-    g("120","Crimp O.D.").photo || "", g("120","Pressure Testing").photo || "", g("120","Fitting Load Test").photo || "", g("120","Air Leakage").photo || "",
-    braidPhotos, S.supName, S.finalisedAt, g("120","Crimp O.D.").label || "", S.batchNo || ""
-  ];
-}
-
-// Per-machine braiding photo URLs (BR-01..BR-18) for the CURRENT round, one dedicated cell
-// each — written separately from buildSheetRow() via its own isolated range (see
-// submitToSheet()), same pattern as Device ID. Mirrors buildSheetRow()'s windowing: if this
-// round's braiding step was already reported in an earlier same-day save, everything comes
-// back blank so a later save can never blank out photos already committed to the Sheet.
-function currentBraidPhotoCols() {
-  const p = PRODUCTS[S.product];
-  if (!p) return Array.from({length:18}, () => "");
-  const rd = S.roundData[S.currentRound];
-  if (!rd) return Array.from({length:18}, () => "");
-
-  const procs = buildProcesses(S.product);
-  const procOrder = {};
-  procs.forEach((pr, i) => { procOrder[pr.no] = i; });
-  const reportedThru = S.reportedThroughIdx || 0;
-  const braidProc = procs.find(pr => pr.type === "braiding");
-  const braidIdx  = braidProc ? procOrder[braidProc.no] : -1;
-  const braidWindowedOut = braidIdx >= 0 && braidIdx < reportedThru;
-  if (braidWindowedOut) return Array.from({length:18}, () => "");
-
-  return Array.from({length:18}, (_, bi) => {
-    const m = `BR-${String(bi+1).padStart(2,"0")}`;
-    return (rd.braiding[m] && rd.braiding[m].photo) || "";
-  });
-}
-
-// Values for the 13 checks that live on processes 030/050/060/080/100/130 — these were
-// never part of the original 43-column write (see SHEET_DATA_COLS) and are appended as
-// their own isolated columns after "Verified Thru Process", same pattern as the BR-XX photo
-// columns above, so no existing column position has to shift. Mirrors buildSheetRow()'s
-// windowing: any of these processes already reported in an earlier same-day save comes back
-// blank so a later save can never blank out data already committed to the Sheet.
-function currentExtraProcessCols() {
-  const rd = S.roundData[S.currentRound];
-  if (!rd) return Array.from({length:13}, () => "");
-
-  const procs = buildProcesses(S.product);
-  const procOrder = {};
-  procs.forEach((pr, i) => { procOrder[pr.no] = i; });
-  const reportedThru = S.reportedThroughIdx || 0;
-  const g = (no, key) => {
-    if ((procOrder[no] ?? 0) < reportedThru) return {};
-    return rd.entries[pkey(no, key)] || {};
-  };
-
-  return [
-    g("030","Hardness").label || "",
-    g("030","Tensile").label || "",
-    g("030","Button Weight").label || "",
-    g("030","TS2").label || "",
-    g("030","TC90").label || "",
-    g("050","Pressure").label || "",
-    g("060","Leakage").label || "",
-    g("060","Pressure").label || "",
-    g("080","O.D. (Ring Die)").label || "",
-    g("080","Wire Cut").label || "",
-    g("080","Appearance").label || "",
-    g("100","Assembly").label || "",
-    g("130","Appearance").label || ""
-  ];
+  return buildBlockARow(p, rdForBraid, ROUND_LABELS[S.currentRound], g);
 }
 
 // A row number cached in S.dayRowNum / the batch registry can go stale if someone deletes
@@ -3021,66 +2995,13 @@ async function submitToSheet(isRetry) {
       });
     }
 
-    // Stamp which device made this save, write the per-machine braiding photos (BR-01..BR-18),
-    // and write the 13 previously-untracked checks (030/050/060/080/100/130) — three separate
-    // isolated column ranges, same reasoning as before (each its own write so none can
-    // misalign the main data columns). These USED to be fire-and-forget (`fetch(...).catch(()
-    // => {})`, never awaited) on the theory that keepalive:true was enough to let them survive
-    // a screen change. In production that theory was wrong: real submitted rows kept coming
-    // back with blank Device ID, blank BR-XX Photo columns, and all 13 extra-check columns
-    // empty — exactly these three writes, every time, while the one write the code actually
-    // awaits (the main row) always landed. So now every one of these is awaited (via
-    // Promise.allSettled, so one failing doesn't cancel the others) before the save is
-    // considered "done" — slower by a fraction of a second, but the data actually lands.
-    const followUps = [];
-    if (rowNum) {
-      const deviceCol = colLetter(SHEET_DATA_COLS + 3);
-      followUps.push(fetch("/api/submit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        keepalive: true,
-        body: JSON.stringify({ mode: "update", range: `${deviceCol}${rowNum}:${deviceCol}${rowNum}`, rows: [[S.operator || ""]] })
-      }));
-    }
-
-    if (rowNum) {
-      const braidCols = currentBraidPhotoCols();
-      if (braidCols.some(v => v)) {
-        const startCol = colLetter(SHEET_DATA_COLS + 5);
-        const endCol   = colLetter(SHEET_DATA_COLS + 22);
-        followUps.push(fetch("/api/submit", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          keepalive: true,
-          body: JSON.stringify({ mode: "update", range: `${startCol}${rowNum}:${endCol}${rowNum}`, rows: [braidCols] })
-        }));
-      }
-    }
-
-    if (rowNum) {
-      const extraCols = currentExtraProcessCols();
-      if (extraCols.some(v => v)) {
-        const startCol = colLetter(SHEET_DATA_COLS + 24);
-        const endCol   = colLetter(SHEET_DATA_COLS + 36);
-        followUps.push(fetch("/api/submit", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          keepalive: true,
-          body: JSON.stringify({ mode: "update", range: `${startCol}${rowNum}:${endCol}${rowNum}`, rows: [extraCols] })
-        }));
-      }
-    }
-
-    if (followUps.length) {
-      const results = await Promise.allSettled(followUps);
-      const failed = results.filter(r => r.status === "rejected" || (r.value && !r.value.ok));
-      if (failed.length) {
-        // Don't fail the whole save over this — the main row is already safely committed —
-        // but do surface it instead of swallowing it silently like before, so a real network
-        // problem here is at least visible instead of quietly losing QA data again.
-        console.warn(`${failed.length} of ${followUps.length} follow-up column writes may not have landed for row ${rowNum}.`);
-      }
-    }
+    // Device ID, the per-machine braiding photos, and the 030/050/060/080/100/130 checks
+    // used to each be separate fire-and-forget follow-up requests after the main row —
+    // that fragmentation is what caused real data loss in production (2026-08-11: Device ID
+    // and 12 of 13 extra checks came back blank on finalised, even verified rows, because
+    // those follow-ups fired but were never confirmed before the app moved on). buildSheetRow()
+    // now returns the complete Block A row in one array, written above as a single awaited
+    // request — there's nothing left to do here.
 
     // NOTE: reportedThroughIdx is deliberately NOT advanced here — it represents "start of
     // today" for this round and must stay fixed across multiple same-day saves, since each
@@ -3886,7 +3807,7 @@ function highestFilledProcess(row, productKey) {
   const procs = buildProcesses(productKey);
 
   // Every process (030 through 130, plus braiding) now has its own tracked Sheet column —
-  // see vrSheetValue() and currentExtraProcessCols() — so scanning columns alone sees
+  // see vrSheetValue() and buildBlockARow() — so scanning columns alone sees
   // partial, unfinalized progress on all of them, not just 040/090/120 as before. The
   // "Finalised At" short-circuit below is kept as a safety net for rows submitted before
   // this expansion (030/050/060/080/100/130 will permanently read blank on those older
@@ -4034,56 +3955,26 @@ async function verifyVrRow(rowNum, deviceId) {
   if (!row) { alert("Row not found — try refreshing the list."); return; }
   try {
     const newThru = highestFilledProcess(row, row.Product);
+    // Block B — Verified By, Verified At, Verified Device ID, Verified Thru Process — is
+    // exactly 4 contiguous columns right after Block A (see SHEET_HEADERS), written here as
+    // ONE atomic range. This used to be 2 separate requests (Verified By/At awaited, then
+    // Verified Device ID and Verified Thru Process as unawaited fire-and-forget follow-ups
+    // after render() had already moved the screen on) — the same class of race that was
+    // silently dropping data on the operator side. One write, fully awaited before
+    // vrJustVerified flips the screen, closes that gap here too.
     const startCol = colLetter(SHEET_DATA_COLS + 1); // "Verified By"
-    const endCol   = colLetter(SHEET_DATA_COLS + 2); // "Verified At"
+    const endCol   = colLetter(SHEET_DATA_COLS + 4); // "Verified Thru Process"
     const range = `${startCol}${rowNum}:${endCol}${rowNum}`;
     const verifiedAt = new Date().toLocaleString("en-IN");
     const res = await fetch("/api/submit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "update", range, rows: [[S.vrName, verifiedAt]] })
+      body: JSON.stringify({ mode: "update", range, rows: [[S.vrName, verifiedAt, S.vrName || "", newThru || ""]] })
     });
     const data = await res.json();
     if (!res.ok) {
       const msg = (data && data.error && (data.error.error?.message || data.error)) || "Verify failed";
       throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
-    }
-    S.vrRows = (S.vrRows || []).filter(r => r.__row !== rowNum);
-    if (S.vrDetailRow) {
-      S.vrDetailRow["Verified At"] = verifiedAt;
-      S.vrDetailRow["Verified By"] = S.vrName;
-      S.vrDetailRow["Verified Device ID"] = S.vrName;
-      S.vrDetailRow["Verified Thru Process"] = newThru;
-    }
-    // Stamp which device verified this row, and extend the cumulative "Verified Thru
-    // Process" high-water mark — each its own isolated column write, same reasoning as
-    // submitToSheet(): these used to be fire-and-forget AFTER render() (so the user could
-    // navigate away before they landed), which is the same race that was silently dropping
-    // Device ID / extra-process data on the operator side. Awaited here too, before
-    // vrJustVerified flips the screen to "done," so the verifier can't leave before these
-    // are confirmed saved.
-    const followUps = [];
-    const verifierDeviceCol = colLetter(SHEET_DATA_COLS + 4);
-    followUps.push(fetch("/api/submit", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      keepalive: true,
-      body: JSON.stringify({ mode: "update", range: `${verifierDeviceCol}${rowNum}:${verifierDeviceCol}${rowNum}`, rows: [[S.vrName || ""]] })
-    }));
-
-    if (newThru) {
-      const verifiedThruCol = colLetter(SHEET_DATA_COLS + 23);
-      followUps.push(fetch("/api/submit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        keepalive: true,
-        body: JSON.stringify({ mode: "update", range: `${verifiedThruCol}${rowNum}:${verifiedThruCol}${rowNum}`, rows: [[newThru]] })
-      }));
-    }
-    const results = await Promise.allSettled(followUps);
-    const failed = results.filter(r => r.status === "rejected" || (r.value && !r.value.ok));
-    if (failed.length) {
-      console.warn(`${failed.length} of ${followUps.length} verify follow-up column writes may not have landed for row ${rowNum}.`);
     }
 
     S.vrRows = (S.vrRows || []).filter(r => r.__row !== rowNum);
