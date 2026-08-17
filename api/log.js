@@ -2,6 +2,11 @@ const { getAccessToken, setCors } = require('./_google');
 
 module.exports = async function handler(req, res) {
   setCors(res);
+  // Never let a browser or CDN cache this response — Verify Reports and Continue
+  // Existing Batch both depend on always seeing the CURRENT sheet state, and a
+  // stale cached response here was implicated in a real incident (a device kept
+  // showing an old/garbled snapshot instead of hitting the network).
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
   if (req.method !== 'GET') { res.status(405).json({ error: 'Method not allowed' }); return; }
 

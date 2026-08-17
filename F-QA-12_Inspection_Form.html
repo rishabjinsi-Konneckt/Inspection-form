@@ -3401,7 +3401,7 @@ async function openBatchReport(base, day, fromScreen) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 20000);
   try {
-    const res = await fetch(`/api/log?search=${encodeURIComponent(base)}`, { signal: controller.signal });
+    const res = await fetch(`/api/log?search=${encodeURIComponent(base)}`, { cache: "no-store", signal: controller.signal });
     const data = await res.json();
     if (!res.ok) {
       const msg = (data && data.error && (data.error.error?.message || data.error)) || "Couldn't load this batch.";
@@ -3590,7 +3590,7 @@ async function runLogSearch() {
     if (S.logFilters.date) params.set("date", S.logFilters.date);
     if (S.logFilters.product && PRODUCTS[S.logFilters.product]) params.set("product", PRODUCTS[S.logFilters.product].label);
     if (S.logFilters.search) params.set("search", S.logFilters.search);
-    const res = await fetch(`/api/log?${params.toString()}`, { signal: controller.signal });
+    const res = await fetch(`/api/log?${params.toString()}`, { cache: "no-store", signal: controller.signal });
     const data = await res.json();
     if (!res.ok) {
       const msg = (data && data.error && (data.error.error?.message || data.error)) || "Search failed";
@@ -3673,7 +3673,7 @@ async function loadVrList() {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 20000);
   try {
-    const res = await fetch("/api/log", { signal: controller.signal });
+    const res = await fetch("/api/log", { cache: "no-store", signal: controller.signal });
     const data = await res.json();
     if (!res.ok) {
       const msg = (data && data.error && (data.error.error?.message || data.error)) || "Search failed";
