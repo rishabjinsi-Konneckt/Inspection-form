@@ -10,7 +10,7 @@ module.exports = async function handler(req, res) {
     if (!sheetId) throw new Error('Missing GOOGLE_SHEET_ID env var');
 
     const body = req.body || {};
-    const mode = ['update', 'meta', 'grow', 'createSheet'].includes(body.mode) ? body.mode : 'append';
+    const mode = ['update', 'meta', 'grow', 'createSheet', 'rename'].includes(body.mode) ? body.mode : 'append';
     const token = await getAccessToken();
 
     // ── meta: fetch sheet properties (sheetId/title/columnCount) ──
@@ -69,6 +69,30 @@ module.exports = async function handler(req, res) {
       const reply = apiData.replies && apiData.replies[0] && apiData.replies[0].addSheet;
       const newSheetId = reply && reply.properties && reply.properties.sheetId;
       res.status(200).json({ success: true, alreadyExisted: false, sheetId: newSheetId });
+      return;
+    }
+
+    // ── rename: change an existing tab's title (e.g. fixing a stale/backup tab naming
+    // mix-up). Not idempotent the way createSheet is — renaming a tab to a title another
+    // tab already holds is a genuine conflict, not a no-op — but that's exactly what the
+    // Sheets API itself already rejects on its own (a clean 400, no partial/silent effect),
+    // so this deliberately does not duplicate that check client-side. ──
+    if (mode === 'rename') {
+      const targetSheetId = body.sheetId;
+      const title = body.title;
+      if (targetSheetId === undefined) throw new Error('rename requires sheetId');
+      if (!title) throw new Error('rename requires title');
+      const url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}:batchUpdate`;
+      const apiRes = await fetch(url, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requests: [{ updateSheetProperties: { properties: { sheetId: targetSheetId, title }, fields: 'title' } }]
+        })
+      });
+      const apiData = await apiRes.json();
+      if (!apiRes.ok) { res.status(apiRes.status).json({ error: apiData }); return; }
+      res.status(200).json({ success: true, result: apiData });
       return;
     }
 
