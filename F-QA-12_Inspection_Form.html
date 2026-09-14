@@ -1832,8 +1832,14 @@ function buildSheetBatchRegistry(rows) {
     const { base, day } = parseBatchNo(rawBatch);
     const roundIdx = ROUND_LABELS.indexOf(r["Shift / Sample"]);
     if (roundIdx < 0) return;
-    const entry = reg[base] || { product: "", lastDay: 0, lastDate: "", rounds: {} };
+    const entry = reg[base] || { product: "", lastDay: 0, lastDate: "", lastSavedAt: "", rounds: {} };
     if (day >= entry.lastDay) { entry.lastDay = day; entry.lastDate = r["Date"] || entry.lastDate; entry.product = r["Product"] || entry.product; }
+    // Most recent save across EVERY round of this batch, independent of the day-number
+    // comparison above (that's about calendar-day-of-batch-continuation, a different axis
+    // than "which row was physically saved most recently"). ISO strings compare correctly
+    // with plain string comparison, so no Date parsing is needed here.
+    const savedAt = r["Last Saved At"] || "";
+    if (savedAt > entry.lastSavedAt) entry.lastSavedAt = savedAt;
     if (!entry.rounds[roundIdx]) entry.rounds[roundIdx] = [];
     entry.rounds[roundIdx].push(r);
     reg[base] = entry;
@@ -1929,6 +1935,9 @@ function mergedBatchRegistry() {
       product:  (s && s.product) || (l && l.product) || "",
       lastDay:  Math.max((s && s.lastDay) || 0, (l && l.lastDay) || 0),
       lastDate: (s && s.lastDate) || (l && l.lastDate) || "",
+      // Sheet-only, same as verifiedThru above — the local (per-device) registry never
+      // captured this, only the Sheet does, since it's written by submitToSheet() itself.
+      lastSavedAt: (s && s.lastSavedAt) || "",
       rounds
     };
   });
@@ -2076,16 +2085,48 @@ function batchStatusBadges(info) {
   }).join("");
 }
 
+// info.lastDate is a bare "YYYY-MM-DD" (the Sheet's "Date" column — no time-of-day is
+// ever captured for it). Reformatted via string split rather than `new Date(iso)` to avoid
+// the same UTC-rollback timezone trap called out on today() — the date string round-trips
+// exactly regardless of which timezone the browser is in.
+function ddmmyyyy(iso) {
+  const parts = (iso || "").split("-");
+  if (parts.length !== 3) return iso || "—";
+  const [y, m, d] = parts;
+  return `${d}-${m}-${y}`;
+}
+
+// info.lastSavedAt (when present — see Block C on SHEET_HEADERS) is a full
+// `new Date().toISOString()` instant, unambiguous regardless of timezone, so parsing it
+// with `new Date(iso)` here is safe — unlike the bare calendar-date string ddmmyyyy() above.
+// Rendered in the viewing device's own local time, same as every other timestamp this app
+// already shows (e.g. fmtSavedAt()).
+function ddmmyyyyTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  let h = d.getHours();
+  const ampm = h >= 12 ? "PM" : "AM";
+  h = h % 12 || 12;
+  const min = String(d.getMinutes()).padStart(2, "0");
+  return `${dd}-${mm}-${d.getFullYear()}, ${String(h).padStart(2, "0")}:${min} ${ampm}`;
+}
+
 function batchCardHtml(base, info) {
   const selected = S.selectedBatch === base;
   const productLabel = (PRODUCTS[info.product] && PRODUCTS[info.product].label) || info.product || "Unknown product";
   const badges = batchStatusBadges(info);
+  // lastSavedAt only exists for rows saved after Block C shipped — older/untouched batches
+  // fall back to the date-only value, same as before.
+  const lastWorked = ddmmyyyyTime(info.lastSavedAt) || ddmmyyyy(info.lastDate);
   return `<div class="batch-card${selected ? " selected" : ""}" onclick="S.selectedBatch='${esc(base)}';render()">
     <div class="batch-card-top">
       <span class="batch-card-product">${esc(productLabel)}</span>
       <span class="batch-card-no">${esc(base)}</span>
     </div>
-    <div class="batch-card-meta">Day ${info.lastDay} · last worked ${esc(info.lastDate || "—")}</div>
+    <div class="batch-card-meta">Day ${info.lastDay} · last worked ${esc(lastWorked)}</div>
     ${badges ? `<div class="batch-card-badges">${badges}</div>` : ""}
   </div>`;
 }
@@ -3002,16 +3043,26 @@ const SHEET_HEADERS = [
   // ── 130 Final Appearance ──
   "Appearance (P130)",
   // ── Block B: Verify Reports only, see above ──
-  "Verified By","Verified At","Verified Device ID","Verified Thru Process"
+  "Verified By","Verified At","Verified Device ID","Verified Thru Process",
+  // ── Block C: operator-written, like Block A, but deliberately placed AFTER Block B
+  // instead of inside it. Block A's write range is a single contiguous
+  // A1:{SHEET_DATA_COLS} block — inserting a column anywhere inside it (or between it and
+  // Block B) would shift every column after the insertion point, which requires physically
+  // moving every existing row's data in the live Sheet, not just adding a column. Appending
+  // past Block B needs no such migration: it's pure growth, nothing existing moves. ──
+  "Last Saved At"
 ];
 // Number of columns in Block A (the operator's single atomic write). Everything from here
 // to the end of SHEET_HEADERS is Block B (Verify Reports' single atomic write).
 const SHEET_DATA_COLS = 75;
+// Block C (see comment above) — where each save's own timestamp goes.
+const LAST_SAVED_COL_NAME = "Last Saved At";
 function colLetter(n) { // 1-indexed column number -> spreadsheet letter(s)
   let s = "";
   while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); }
   return s;
 }
+const LAST_SAVED_COL = colLetter(SHEET_HEADERS.indexOf(LAST_SAVED_COL_NAME) + 1);
 
 // Builds one full Block-A row (all SHEET_DATA_COLS columns, in the exact SHEET_HEADERS
 // order above) from a round's entries. Shared by buildSheetRows() (all rounds, unwindowed,
@@ -3132,6 +3183,27 @@ async function locateRow(rowNum, expectBatchNo, expectShift, expectDate) {
   }
 }
 
+// The Sheet's row 1 must actually contain "Last Saved At" at LAST_SAVED_COL for
+// /api/log's name-keyed row-object mapping to expose that column at all — an unlabeled
+// column would read back keyed under "" instead. This codebase's convention for schema
+// setup (see api/submit.js's grow/createSheet modes) is a one-time administrative step, not
+// something the app grows unprompted at runtime — so this only ever WRITES the header text
+// into a cell that must already exist in the grid; it does not expand the sheet's column
+// count itself. Gated to once per page session (writing the same text repeatedly is wasted
+// traffic, not wasted correctness); a failed attempt simply retries on the next page load.
+let lastSavedHeaderEnsured = false;
+async function ensureLastSavedHeader() {
+  if (lastSavedHeaderEnsured) return;
+  try {
+    await fetch("/api/submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "update", range: `${LAST_SAVED_COL}1:${LAST_SAVED_COL}1`, rows: [[LAST_SAVED_COL_NAME]] })
+    });
+  } catch (e) { /* best-effort — see comment above */ }
+  finally { lastSavedHeaderEnsured = true; }
+}
+
 // Same-day upsert: the FIRST save of a given calendar day for this round appends a fresh
 // row (and remembers its row number); any LATER save on that SAME calendar date updates
 // that exact row in place instead of appending another one. A genuinely new calendar
@@ -3188,6 +3260,26 @@ async function submitToSheet(isRetry) {
         roundLastDate: S.date
       });
     }
+
+    // Records this save's own timestamp in Block C (see SHEET_HEADERS), so "Continue
+    // Existing Batch" can show a real last-worked TIME, not just a date. Deliberately a
+    // SEPARATE, AWAITED write rather than folded into Block A's array — Block C sits past
+    // Block B specifically so adding it never touches Block A's/Block B's column math (see
+    // the Block C comment on SHEET_HEADERS). This is not the fire-and-forget pattern the
+    // comment above warns about: it's confirmed before continuing, and same as the main row
+    // write above, its failure falls through to this function's existing retry/error path
+    // rather than failing silently.
+    const lastSavedRes = await fetch("/api/submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "update", range: `${LAST_SAVED_COL}${rowNum}:${LAST_SAVED_COL}${rowNum}`, rows: [[new Date().toISOString()]] })
+    });
+    if (!lastSavedRes.ok) {
+      const lastSavedData = await lastSavedRes.json().catch(() => ({}));
+      const msg = (lastSavedData && lastSavedData.error && (lastSavedData.error.error?.message || lastSavedData.error)) || "Couldn't record save time";
+      throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+    }
+    await ensureLastSavedHeader(); // best-effort, see its own comment — never blocks this save
 
     // Device ID, the per-machine braiding photos, and the 030/050/060/080/100/130 checks
     // used to each be separate fire-and-forget follow-up requests after the main row —
