@@ -31,6 +31,14 @@ select:focus, input[type="date"]:focus { border-color: #2563eb; }
 .shift-btn.on { background: #eff6ff; border-color: #2563eb; color: #2563eb; }
 .shift-btn.locked { opacity: .45; cursor: not-allowed; background: #f8fafc; }
 
+.batch-card { border: 2px solid #e2e8f0; border-radius: 12px; padding: 12px 14px; margin-bottom: 8px; cursor: pointer; background: white; }
+.batch-card.selected { border-color: #2563eb; background: #eff6ff; }
+.batch-card-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.batch-card-product { font-size: 15px; font-weight: 800; color: #1e3a5f; }
+.batch-card-no { font-size: 12px; color: #64748b; white-space: nowrap; }
+.batch-card-meta { font-size: 12px; color: #64748b; margin-top: 2px; }
+.batch-card-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+
 .proc-badge   { background: #1e3a5f; color: white; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; display: inline-block; margin-bottom: 8px; }
 .proc-title   { font-size: 17px; font-weight: 700; }
 .proc-machine { font-size: 13px; color: #64748b; margin-top: 2px; }
@@ -1566,6 +1574,7 @@ function freshState() {
     supName:"", verified:{}, finalisedAt:"",
     submitStatus:"", submitError:"",
     batchBase:"", batchNo:"", batchDay:1, reportedThroughIdx:0, dayRowNum:null,
+    selectedBatch:"", batchSearch:"",
     sheetBatchReg:null, sheetBatchRegLoading:false, sheetBatchRegError:"",
     logFilters:{date:"",product:"",search:""}, logResults:null, logLoading:false, logError:"", logDetailRow:null,
     batchReportFrom:"setup", batchReportBase:"", batchReportDay:1, batchReportRows:null, batchReportLoading:false, batchReportError:"",
@@ -2052,6 +2061,35 @@ function approvalSampleVerifiedThru() {
   return (info && info.rounds && info.rounds[0] && info.rounds[0].verifiedThru) || null;
 }
 
+// Per-shift status chips for one batch card — same "V-<procNo>" / "not verified yet"
+// wording the old dropdown's option text used, just rendered as badges instead of packed
+// into one run-on string. A round absent from `rounds` (never touched) gets no chip at
+// all, matching the old behavior exactly.
+function batchStatusBadges(info) {
+  const rounds = info.rounds || {};
+  return ROUND_LABELS.map((lbl, i) => {
+    const r = rounds[i];
+    if (!r) return "";
+    return r.verifiedThru
+      ? `<span class="badge b-ok">${esc(lbl)}: V-${esc(r.verifiedThru)}</span>`
+      : `<span class="badge b-na">${esc(lbl)}: not verified</span>`;
+  }).join("");
+}
+
+function batchCardHtml(base, info) {
+  const selected = S.selectedBatch === base;
+  const productLabel = (PRODUCTS[info.product] && PRODUCTS[info.product].label) || info.product || "Unknown product";
+  const badges = batchStatusBadges(info);
+  return `<div class="batch-card${selected ? " selected" : ""}" onclick="S.selectedBatch='${esc(base)}';render()">
+    <div class="batch-card-top">
+      <span class="batch-card-product">${esc(productLabel)}</span>
+      <span class="batch-card-no">${esc(base)}</span>
+    </div>
+    <div class="batch-card-meta">Day ${info.lastDay} · last worked ${esc(info.lastDate || "—")}</div>
+    ${badges ? `<div class="batch-card-badges">${badges}</div>` : ""}
+  </div>`;
+}
+
 function rSetup() {
   // Sheet-backed batch list is fetched once per app load (and on manual refresh) so
   // "Continue Existing Batch" shows the same batches regardless of which device is asking.
@@ -2073,16 +2111,23 @@ function rSetup() {
   const shiftLocked = enforceShiftGate();
 
   const registry  = mergedBatchRegistry();
-  const batchKeys = Object.keys(registry);
-  const contOpts  = batchKeys.map(b => {
-    const rounds = registry[b].rounds || {};
-    const roundSummary = ROUND_LABELS.map((lbl, i) => {
-      const r = rounds[i];
-      if (!r) return null;
-      return `${lbl}: ${r.verifiedThru ? "V-" + r.verifiedThru : "not verified yet"}`;
-    }).filter(Boolean).join(", ");
-    return `<option value="${b}">${b} — ${registry[b].product} (day ${registry[b].lastDay} last done ${registry[b].lastDate})${roundSummary ? " · " + roundSummary : ""}</option>`;
-  }).join("");
+  // Newest-worked batch first — the one an operator's continuing today is almost always
+  // near the top of the list, not buried under every batch the plant has ever run.
+  let batchKeys = Object.keys(registry).sort((a, b) =>
+    (registry[b].lastDate || "").localeCompare(registry[a].lastDate || "") || a.localeCompare(b));
+  // Whether the whole "Continue Existing Batch" card (search box included) shows at all —
+  // this must stay keyed off the UNFILTERED count, or a search with zero matches would
+  // hide the very search box needed to change/clear it.
+  const hasAnyBatches = batchKeys.length > 0;
+  if (S.batchSearch) {
+    const needle = S.batchSearch.toLowerCase();
+    batchKeys = batchKeys.filter(b => {
+      const info = registry[b];
+      const productLabel = (PRODUCTS[info.product] && PRODUCTS[info.product].label) || info.product || "";
+      return b.toLowerCase().includes(needle) || productLabel.toLowerCase().includes(needle);
+    });
+  }
+  const contCards = batchKeys.map(b => batchCardHtml(b, registry[b])).join("");
 
   return `
     <div class="header">
@@ -2119,7 +2164,7 @@ function rSetup() {
       <button class="btn-outline" onclick="S.screen='log';render()">📊 View Inspection Log</button>
       <button class="btn-outline" style="background:#faf5ff;color:#7e22ce;border-color:#9333ea;" onclick="openVerifyReports()">🔒 Verify Reports</button>
     </div>
-    ${batchKeys.length ? `
+    ${hasAnyBatches ? `
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
         <div style="font-weight:700;font-size:15px;">↻ Continue Existing Batch</div>
@@ -2127,8 +2172,14 @@ function rSetup() {
       </div>
       <div style="font-size:12px;color:#64748b;margin-bottom:10px;">Pick a batch worked on a previous day, then select Prepared By, PIN, and Shift above before continuing. This list includes batches worked on any device.</div>
       ${S.sheetBatchRegError ? `<div class="alert" style="font-size:12px;">⚠ Couldn't sync with the Sheet: ${esc(S.sheetBatchRegError)} — showing only what's known on this device. <span style="text-decoration:underline;cursor:pointer;" onclick="refreshSheetBatches()">Retry</span></div>` : ""}
-      <label style="margin-top:0;">Batch Number</label>
-      <select id="s-batch"><option value="">— Select batch —</option>${contOpts}</select>
+      <label style="margin-top:0;">Search</label>
+      <input type="text" placeholder="Search by batch number or product…"
+        value="${(S.batchSearch||"").replace(/"/g,"&quot;")}"
+        onchange="S.batchSearch=this.value;render()"
+        style="width:100%;padding:11px 13px;border:2px solid #e2e8f0;border-radius:10px;font-size:14px;outline:none;margin-bottom:10px;">
+      <div class="batch-card-list">
+        ${contCards || `<div style="text-align:center;font-size:12px;color:#94a3b8;padding:10px 0;">No batches match your search.</div>`}
+      </div>
       <button class="btn-outline" style="background:#fff7ed;color:#c2410c;border-color:#f97316;" onclick="continueBatchClicked()">↻ Continue This Batch →</button>
       <button class="btn-outline" style="background:#eff6ff;color:#1d4ed8;border-color:#2563eb;" onclick="viewBatchReportClicked()">📄 View Full Report (All Shifts)</button>
     </div>` : (S.sheetBatchRegLoading ? `<div style="text-align:center;font-size:12px;color:#94a3b8;margin-top:4px;">Checking for batches from other devices…</div>` : "")}
@@ -2234,7 +2285,7 @@ function startInspection() {
 // progress for that round carries forward (nothing is wiped). Which round is "active" is
 // entirely determined by whichever Shift button is selected here, not by an in-app tab.
 function continueBatch() {
-  const base = document.getElementById("s-batch").value;
+  const base = S.selectedBatch;
   if (!base) { alert("Please select a batch to continue."); return; }
   const op = document.getElementById("s-op").value;
   if (!op) { alert("Please select an operator (Prepared By)."); return; }
@@ -3566,8 +3617,7 @@ async function openBatchReport(base, day, fromScreen) {
 // Prompts for which day if the batch has run more than one (rare — most batches finish in
 // a single day), since each day is its own page.
 function viewBatchReportClicked() {
-  const sel = document.getElementById("s-batch");
-  const base = sel ? sel.value : "";
+  const base = S.selectedBatch;
   if (!base) { alert("Please select a batch from the list first."); return; }
   const info = mergedBatchRegistry()[base];
   const lastDay = (info && info.lastDay) || 1;
