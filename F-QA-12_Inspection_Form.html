@@ -1389,47 +1389,85 @@ const CLOUDINARY_CLOUD_NAME   = "aqtkoy2b";
 const CLOUDINARY_UPLOAD_PRESET = "Konneckt";
 const PHOTO_MAX_DIM = 1600; // px — keeps uploads fast on factory WiFi
 
-function stampImage(file) {
+// Decode a selected photo and downscale it to PHOTO_MAX_DIM as cheaply as the browser allows.
+//
+// The original path was readAsDataURL() -> new Image() -> canvas. For a 12MP phone photo
+// that meant a ~7MB base64 string held in the JS heap PLUS a full-resolution (~48MB) decode
+// on the MAIN THREAD before any resize happened — which is the hang operators were hitting
+// while capturing photos mid-process. createImageBitmap() decodes off the main thread and
+// resizes during decode, so the UI keeps responding on a mid-range factory phone.
+//
+// imageOrientation:"from-image" is required, not cosmetic: <img> applies EXIF rotation
+// automatically, createImageBitmap does NOT by default, and silently sideways evidence
+// photos would be a regression.
+async function decodeScaledPhoto(file) {
+  if (typeof createImageBitmap === "function") {
+    let full = null;
+    try {
+      full = await createImageBitmap(file, { imageOrientation: "from-image" });
+      const scale = Math.min(1, PHOTO_MAX_DIM / Math.max(full.width, full.height));
+      if (scale === 1) return full;
+      const small = await createImageBitmap(full, 0, 0, full.width, full.height, {
+        resizeWidth:   Math.max(1, Math.round(full.width  * scale)),
+        resizeHeight:  Math.max(1, Math.round(full.height * scale)),
+        resizeQuality: "high"
+      });
+      full.close();
+      return small;
+    } catch (e) {
+      if (full && full.close) full.close();
+      // fall through to the element path below
+    }
+  }
+  // Fallback for browsers without createImageBitmap. Object URL rather than data URL —
+  // same decode cost, but without also holding a multi-megabyte base64 string.
   return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error("Could not read photo"));
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onerror = () => reject(new Error("Could not decode photo"));
-      img.onload = () => {
-        let w = img.width, h = img.height;
-        if (w > PHOTO_MAX_DIM || h > PHOTO_MAX_DIM) {
-          const scale = PHOTO_MAX_DIM / Math.max(w, h);
-          w = Math.round(w * scale); h = Math.round(h * scale);
-        }
-        const canvas = document.createElement("canvas");
-        canvas.width = w; canvas.height = h;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0, w, h);
-
-        const stamp = new Date().toLocaleString("en-IN", {
-          day:"2-digit", month:"short", year:"numeric",
-          hour:"2-digit", minute:"2-digit", second:"2-digit"
-        });
-        const fontSize = Math.max(16, Math.round(w * 0.028));
-        ctx.font = `bold ${fontSize}px Arial`;
-        const textW = ctx.measureText(stamp).width;
-        const pad = fontSize * 0.5;
-        const boxW = textW + pad * 2, boxH = fontSize + pad * 1.4;
-        const x = w - boxW - fontSize * 0.4, y = h - boxH - fontSize * 0.4;
-
-        ctx.fillStyle = "rgba(0,0,0,0.55)";
-        ctx.fillRect(x, y, boxW, boxH);
-        ctx.fillStyle = "#FFD400";
-        ctx.textBaseline = "middle";
-        ctx.fillText(stamp, x + pad, y + boxH / 2);
-
-        canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Could not encode photo")), "image/jpeg", 0.85);
-      };
-      img.src = e.target.result;
-    };
-    reader.readAsDataURL(file);
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload  = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Could not decode photo")); };
+    img.src = url;
   });
+}
+
+async function stampImage(file) {
+  const src = await decodeScaledPhoto(file);
+  let w = src.naturalWidth  || src.width;
+  let h = src.naturalHeight || src.height;
+  // createImageBitmap already resized during decode; only the fallback path reaches here
+  // still oversized.
+  if (w > PHOTO_MAX_DIM || h > PHOTO_MAX_DIM) {
+    const scale = PHOTO_MAX_DIM / Math.max(w, h);
+    w = Math.round(w * scale); h = Math.round(h * scale);
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(src, 0, 0, w, h);
+  if (src.close) src.close();   // free the native bitmap immediately
+
+  const stamp = new Date().toLocaleString("en-IN", {
+    day:"2-digit", month:"short", year:"numeric",
+    hour:"2-digit", minute:"2-digit", second:"2-digit"
+  });
+  const fontSize = Math.max(16, Math.round(w * 0.028));
+  ctx.font = `bold ${fontSize}px Arial`;
+  const textW = ctx.measureText(stamp).width;
+  const pad = fontSize * 0.5;
+  const boxW = textW + pad * 2, boxH = fontSize + pad * 1.4;
+  const x = w - boxW - fontSize * 0.4, y = h - boxH - fontSize * 0.4;
+
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillRect(x, y, boxW, boxH);
+  ctx.fillStyle = "#FFD400";
+  ctx.textBaseline = "middle";
+  ctx.fillText(stamp, x + pad, y + boxH / 2);
+
+  const blob = await new Promise((resolve, reject) => {
+    canvas.toBlob(b => b ? resolve(b) : reject(new Error("Could not encode photo")), "image/jpeg", 0.85);
+  });
+  canvas.width = canvas.height = 0;   // release the backing store on memory-tight phones
+  return blob;
 }
 
 async function uploadToCloudinary(blob, context) {
@@ -1513,16 +1551,70 @@ function rPhotoBadge(entry, inputId) {
   return `<div class="photo-row" onclick="document.getElementById('${inputId}').click()">${badge}</div>`;
 }
 
+// The single source of truth for a blank session. Used for the initial state, by
+// newInspection(), AND as the base that a restored session is merged onto — so a saved
+// payload written by an older version of this file (or one deliberately slimmed down by
+// saveState's fallback below) can never leave S missing a field the render code expects.
+function freshState() {
+  return {
+    screen:"setup", product:"", date:today(), shift:ROUND_LABELS[0], operator:"",
+    processIdx:0,
+    currentRound:0,
+    procOperators:{},
+    roundData:ROUND_LABELS.map(() => emptyRound()),
+    activeBraid:null,
+    supName:"", verified:{}, finalisedAt:"",
+    submitStatus:"", submitError:"",
+    batchBase:"", batchNo:"", batchDay:1, reportedThroughIdx:0, dayRowNum:null,
+    sheetBatchReg:null, sheetBatchRegLoading:false, sheetBatchRegError:"",
+    logFilters:{date:"",product:"",search:""}, logResults:null, logLoading:false, logError:"", logDetailRow:null,
+    batchReportFrom:"setup", batchReportBase:"", batchReportDay:1, batchReportRows:null, batchReportLoading:false, batchReportError:"",
+    vrPin:"", vrName:"", vrRows:null, vrLoading:false, vrError:"", vrDetailRow:null, vrJustVerified:false
+  };
+}
+
+// Caches of Sheet data and transient UI status — deliberately NOT persisted.
+//
+// This is a data-loss fix, not a tidiness one. saveState() used to stringify the whole of
+// S, and S.sheetBatchReg / logResults / vrRows / batchReportRows each hold RAW sheet rows
+// (buildSheetBatchRegistry pushes them straight in; /api/log returns up to 500 rows of ~79
+// columns). One trip through the Inspection Log was enough to push the payload past the
+// ~5MB localStorage quota — after which setItem() threw on EVERY subsequent save and the
+// old `catch (e) {}` swallowed it silently. Autosave was dead from that point on, nothing
+// said so, and the next hang or Back press lost the whole inspection. All of these are
+// re-fetched on demand, and mergedBatchRegistry() already handles sheetBatchReg === null.
+const EPHEMERAL_KEYS = [
+  "sheetBatchReg", "sheetBatchRegLoading", "sheetBatchRegError",
+  "logResults", "logLoading", "logError", "logDetailRow",
+  "batchReportRows", "batchReportLoading", "batchReportError",
+  "vrRows", "vrLoading", "vrError", "vrDetailRow"
+];
+
+// Set when a save could not be completed. Surfaced in the UI by render() — a silent
+// autosave failure is the worst possible failure mode for this form.
+let saveFailed = false;
+
 function saveState() {
+  S.savedAt = new Date().toISOString();
+  const payload = {};
+  Object.keys(S).forEach(k => { if (!EPHEMERAL_KEYS.includes(k)) payload[k] = S[k]; });
   try {
-    S.savedAt = new Date().toISOString();
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(S));
-  } catch (e) { /* storage unavailable or full — fail silently */ }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    saveFailed = false;
+    return true;
+  } catch (e) {
+    saveFailed = true;
+    return false;
+  }
 }
 function loadState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : null;
+    if (!raw) return null;
+    const saved = JSON.parse(raw);
+    if (!saved || typeof saved !== "object") return null;
+    // Merge onto a fresh state so a slimmed or older payload still yields a complete S.
+    return Object.assign(freshState(), saved);
   } catch (e) { return null; }
 }
 function clearState() {
@@ -1532,21 +1624,20 @@ function hasMeaningfulProgress(saved) {
   return !!saved && (saved.screen !== "setup" || !!saved.product);
 }
 
-let S = {
-  screen:"setup", product:"", date:today(), shift:ROUND_LABELS[0], operator:"",
-  processIdx:0,
-  currentRound:0,
-  procOperators:{},
-  roundData:ROUND_LABELS.map(() => emptyRound()),
-  activeBraid:null,
-  supName:"", verified:{}, finalisedAt:"",
-  submitStatus:"", submitError:"",
-  batchBase:"", batchNo:"", batchDay:1, reportedThroughIdx:0, dayRowNum:null,
-  sheetBatchReg:null, sheetBatchRegLoading:false, sheetBatchRegError:"",
-  logFilters:{date:"",product:"",search:""}, logResults:null, logLoading:false, logError:"", logDetailRow:null,
-  batchReportFrom:"setup", batchReportBase:"", batchReportDay:1, batchReportRows:null, batchReportLoading:false, batchReportError:"",
-  vrPin:"", vrName:"", vrRows:null, vrLoading:false, vrError:"", vrDetailRow:null, vrJustVerified:false
-};
+// How many readings exist across every round of the current session. This is the number
+// that decides whether a destructive action needs confirming, so it counts anything an
+// operator would recognise as their work — entries and braiding machines alike.
+function recordedReadingCount() {
+  if (!Array.isArray(S.roundData)) return 0;
+  return S.roundData.reduce((n, round) => {
+    if (!round) return n;
+    const entries  = Object.values(round.entries  || {}).filter(v => v && v.result).length;
+    const braiding = Object.values(round.braiding || {}).filter(v => v && v.result).length;
+    return n + entries + braiding;
+  }, 0);
+}
+
+let S = freshState();
 
 // helpers so rest of code stays concise
 function curEntries()  { return S.roundData[S.currentRound].entries;  }
@@ -1914,8 +2005,19 @@ function allEntryKeys() {
 function render() {
   const fns = { setup:rSetup, process:rProcess, review:rReview, submitted:rSubmitted, report:rReport, log:rLog, logdetail:rLogDetail,
     batchreport:rBatchReport, paused:rPaused, vrpin:rVrPin, vrname:rVrName, vrlist:rVrList, vrdetail:rVrDetail };
-  document.getElementById("app").innerHTML = fns[S.screen]();
+  // Save BEFORE painting, so that if the save fails this very paint can say so.
   saveState();
+  document.getElementById("app").innerHTML = saveWarning() + fns[S.screen]();
+}
+
+// A failed autosave used to be completely invisible. If one ever fails now, say so on
+// every screen, in the operator's terms, until a save succeeds again.
+function saveWarning() {
+  if (!saveFailed) return "";
+  return `<div class="alert" style="background:#fef2f2;color:#991b1b;border-color:#dc2626;">
+    ⚠ <strong>This device could not save your progress.</strong> Don't close this page or press Back.
+    Use "⏸ Save Progress &amp; Continue Later" now to push your work to the Sheet.
+  </div>`;
 }
 
 // ═══════════════════════════════════════════════
@@ -2056,6 +2158,21 @@ async function continueBatchClicked() {
 }
 
 function startInspection() {
+  // This function resets S.roundData (below), and render() then persists that reset over
+  // the localStorage backup — so a stray tap on "Begin Inspection" while an inspection was
+  // still live destroyed every recorded reading, irrecoverably. The batch-already-exists
+  // confirm() further down does NOT cover this: registerBatchDay() only runs at
+  // pause/submit/finalise time, so an in-progress batch isn't in the registry yet and that
+  // branch is skipped entirely. navBack() now refuses to strand an operator here, but this
+  // is the authoritative guard — nothing gets wiped without an explicit yes.
+  const inProgress = recordedReadingCount();
+  if (inProgress > 0 && !confirm(
+    `WARNING — an inspection is already in progress with ${inProgress} recorded reading${inProgress === 1 ? "" : "s"}.\n\n` +
+    `Starting a new inspection will PERMANENTLY DELETE ${inProgress === 1 ? "it" : "them"}. This cannot be undone.\n\n` +
+    `To keep your work, press Cancel and use "⏸ Save Progress & Continue Later" instead.\n\n` +
+    `Press OK only if you are sure you want to discard it.`
+  )) return;
+
   S.product  = document.getElementById("s-product").value;
   S.date     = document.getElementById("s-date").value;
   S.operator = document.getElementById("s-op").value;
@@ -2257,7 +2374,10 @@ function rProcess() {
         ${S.processIdx===total-1?"Review All →":"Next →"}
       </button>
     </div>
-    <button class="btn-outline no-print" style="background:#fefce8;color:#854d0e;border-color:#eab308;margin-top:10px;" onclick="pauseBatch()">⏸ Save Progress &amp; Continue Later</button>`;
+    <button class="btn-outline no-print" style="background:#fefce8;color:#854d0e;border-color:#eab308;margin-top:10px;" onclick="pauseBatch()">⏸ Save Progress &amp; Continue Later</button>
+    <div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:8px;">
+      ${S.savedAt ? `&#10003; Saved on this device automatically &middot; ${new Date(S.savedAt).toLocaleTimeString("en-IN", { hour:"2-digit", minute:"2-digit" })}` : ""}
+    </div>`;
 }
 
 // ── normal checks ──
@@ -2540,7 +2660,30 @@ function recordManual(key) {
 }
 
 function navBack() {
-  if (S.processIdx===0) S.screen="setup"; else S.processIdx--;
+  // Back from the FIRST process is the one press that drops an operator onto Setup, where
+  // "Begin Inspection" wipes the session. Don't let that happen by accident — offer the
+  // checkpoint button that exists for exactly this purpose instead.
+  if (S.processIdx === 0) {
+    const n = recordedReadingCount();
+    if (n > 0) {
+      const leave = confirm(
+        `Inspection in progress — ${n} reading${n === 1 ? "" : "s"} recorded.\n\n` +
+        `Back would leave this inspection.\n\n` +
+        `OK — save progress to the Sheet and continue later\n` +
+        `Cancel — stay in the inspection`
+      );
+      if (!leave) return;
+      // hasNewProgressToReport() is false when everything here is already checkpointed;
+      // pauseBatch() would just alert and refuse, stranding the operator with no way out,
+      // so in that case going to Setup is both safe and the only sensible move.
+      if (hasNewProgressToReport()) { pauseBatch(); return; }
+      S.screen = "setup";
+    } else {
+      S.screen = "setup";
+    }
+  } else {
+    S.processIdx--;
+  }
   S.activeBraid = null; render();
 }
 function navNext() {
@@ -3150,13 +3293,7 @@ function rReport() {
 
 function newInspection() {
   clearState();
-  S = { screen:"setup", product:"", date:today(), shift:ROUND_LABELS[0], operator:"",
-        processIdx:0, currentRound:0, procOperators:{},
-        roundData:ROUND_LABELS.map(() => emptyRound()),
-        activeBraid:null, supName:"", verified:{}, finalisedAt:"",
-        submitStatus:"", submitError:"",
-        batchBase:"", batchNo:"", batchDay:1, reportedThroughIdx:0, dayRowNum:null,
-        logFilters:{date:"",product:"",search:""}, logResults:null, logLoading:false, logError:"" };
+  S = freshState();
   render();
 }
 
@@ -4015,7 +4152,52 @@ function discardSession() {
   render();
 }
 
+// ── Hardware / gesture Back guard ──
+// Android's Back button and iOS's swipe-back navigate away from the entire page, and this
+// app never pushed a history entry — so mid-inspection they unloaded everything in memory.
+// The operator then landed on a fresh boot() whose "Discard & Start Fresh" button, or the
+// Setup screen's "Begin Inspection", destroyed the session in one tap.
+//
+// We keep one spare history entry parked at all times and translate a Back press into the
+// same in-app navigation the on-screen Back button performs, so the page itself is never
+// left while there is work in flight. Screens absent from this map (setup, submitted,
+// report) have nothing to protect: we don't re-park there, so a second press leaves
+// normally and the operator can still close the tab or navigate away.
+const BACK_TARGETS = {
+  process:     () => navBack(),
+  review:      () => { S.processIdx = buildProcesses(S.product).length - 1; S.screen = "process"; render(); },
+  log:         () => { S.screen = "setup"; render(); },
+  logdetail:   () => { S.screen = "log"; render(); },
+  batchreport: () => { S.screen = S.batchReportFrom || "setup"; render(); },
+  vrpin:       () => { S.screen = "setup"; render(); },
+  vrname:      () => { S.screen = "vrpin"; render(); },
+  vrlist:      () => { S.screen = "setup"; render(); },
+  vrdetail:    () => { S.screen = "vrlist"; render(); },
+  paused:      () => { S.screen = "setup"; render(); }
+};
+
+function parkHistoryEntry() {
+  try { history.pushState({ fqa12: true }, ""); } catch (e) {}
+}
+
+function installBackGuard() {
+  parkHistoryEntry();
+  window.addEventListener("popstate", () => {
+    const handler = BACK_TARGETS[S.screen];
+    if (!handler) return;      // let the press through — nothing in flight on this screen
+    parkHistoryEntry();        // re-park first, so the page is never actually left
+    handler();
+  });
+
+  // A phone can background or kill this tab at any moment — incoming call, app switch, low
+  // memory. pagehide and visibilitychange are the only events that fire reliably on mobile
+  // for that (beforeunload does not), so flush on the way out.
+  window.addEventListener("pagehide", saveState);
+  document.addEventListener("visibilitychange", () => { if (document.hidden) saveState(); });
+}
+
 function boot() {
+  installBackGuard();
   const saved = loadState();
   if (hasMeaningfulProgress(saved)) {
     window.__resumeData = saved;
