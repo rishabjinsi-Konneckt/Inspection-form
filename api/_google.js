@@ -60,4 +60,4 @@ function setCors(res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 }
 
-module.exports = { getAccessToken, setCors };
+module.exports = { getAccessToken, setCors, base64url };

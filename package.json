@@ -1,0 +1,7 @@
+{
+  "name": "f-qa-12-inspection-form",
+  "private": true,
+  "scripts": {
+    "test": "node --test"
+  }
+}
