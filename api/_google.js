@@ -57,7 +57,30 @@ async function getAccessToken() {
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-App-Secret, X-Admin-Secret');
 }
 
-module.exports = { getAccessToken, setCors };
+// Every request must present this shared secret (the frontend attaches it via apiFetch()).
+// This is a real, client-visible value — anyone can view-source it, same as any secret
+// shipped to a browser — so it does not stop a determined, targeted attacker. It stops the
+// zero-effort case: automated scanners and drive-by requests from anyone who never looked
+// at this app's code, which is what these endpoints were open to before this existed.
+function isAuthorized(req) {
+  const expected = process.env.APP_SHARED_SECRET;
+  if (!expected) throw new Error('Missing APP_SHARED_SECRET env var');
+  const provided = req.headers['x-app-secret'];
+  return typeof provided === 'string' && provided === expected;
+}
+
+// Structural/destructive modes (grow, createSheet, rename) require this SEPARATE, stronger
+// secret in addition to the one above. The frontend never sends it — nothing in the normal
+// app flow calls these modes, they're admin-only tools — so knowing the regular app secret
+// alone is not enough to restructure the spreadsheet.
+function isAdminAuthorized(req) {
+  const expected = process.env.ADMIN_SHARED_SECRET;
+  if (!expected) throw new Error('Missing ADMIN_SHARED_SECRET env var');
+  const provided = req.headers['x-admin-secret'];
+  return typeof provided === 'string' && provided === expected;
+}
+
+module.exports = { getAccessToken, setCors, base64url, isAuthorized, isAdminAuthorized };
