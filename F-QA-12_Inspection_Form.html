@@ -186,7 +186,13 @@ select:focus, input[type="date"]:focus { border-color: #2563eb; }
 // ═══════════════════════════════════════════════
 // PRODUCT DATABASE
 // ═══════════════════════════════════════════════
-const PRODUCTS = {
+// PRODUCTS_FALLBACK is the last-resort product config baked into the app itself.
+// It is ONLY used if the live "Products" tab in the Google Sheet has never been
+// successfully fetched (first-ever load with no network, or a fetch failure with
+// no cached copy yet from a previous successful load). Normal operation uses the
+// live `PRODUCTS` variable below, which is populated from the sheet at startup —
+// see loadLiveProducts() further down.
+const PRODUCTS_FALLBACK = {
   "12ESBB45": {
     label: "12ESBB45",
     desc:  "SS Braid + Brass Nut",
@@ -1219,6 +1225,126 @@ const PRODUCTS = {
     flow: ["030","040","050","060","070","080","090","100","120","130"]
   }
 };
+
+// `PRODUCTS` is what the rest of the app actually reads (PRODUCTS[key].label, etc.).
+// It starts out equal to the hardcoded fallback so the app is usable immediately,
+// then gets replaced with live data from the "Products" tab once loadLiveProducts()
+// resolves — see the call to it inside boot() near the bottom of this file.
+let PRODUCTS = PRODUCTS_FALLBACK;
+
+const PRODUCTS_CACHE_KEY = "fqa12_products_cache_v1";
+
+// Turns a {min, max, leastCount} triple into the PASS/FAIL band-button list the UI
+// renders — this replaces what used to be a hand-written band array per product.
+// failOutside=true means anything below min or above max is FAIL (used for O.D./I.D.
+// and crimping checks); failOutside=false just buckets the range for record-keeping
+// with no fail verdict (used for braiding O.D. and cutting length, matching how
+// those checks always behaved even in the old hardcoded data).
+function buildBands(min, max, leastCount, failOutside) {
+  min = Number(min); max = Number(max); leastCount = Number(leastCount) || 0.1;
+  if (!isFinite(min) || !isFinite(max) || max <= min) return [];
+  // Display precision: fractional least counts (mm dimensions) always show to 2
+  // decimals (matching the device's hundredths-of-a-mm readout), whole-number
+  // least counts (length in mm, pressure/load in kgf) show as plain integers.
+  const decimals = (leastCount % 1 !== 0) ? 2 : 0;
+  const fmt = (n) => n.toFixed(decimals);
+  const bands = [];
+  if (failOutside) bands.push({ label: `<${fmt(min)} FAIL`, r: "FAIL" });
+  else bands.push({ label: `<${fmt(min)}`, r: "PASS" });
+  const smallest = Math.pow(10, -decimals);
+  let lo = min;
+  let guard = 0;
+  while (lo < max - 1e-9 && guard++ < 500) {
+    const hi = Math.min(Math.round((lo + leastCount - smallest) * Math.pow(10, decimals)) / Math.pow(10, decimals), max);
+    bands.push({ label: `${fmt(lo)}-${fmt(hi)}`, r: "PASS" });
+    lo = Math.round((lo + leastCount) * Math.pow(10, decimals)) / Math.pow(10, decimals);
+  }
+  if (failOutside) bands.push({ label: `>${fmt(max)} FAIL`, r: "FAIL" });
+  else bands.push({ label: `>${fmt(max)}`, r: "PASS" });
+  return bands;
+}
+
+// Converts the flat rows returned by /api/products (one row per product, matching
+// the "Products" tab headers) into the same nested shape PRODUCTS_FALLBACK uses,
+// so nothing else in the app needs to know or care where the data came from.
+function parseProductsFromRows(rows) {
+  const out = {};
+  for (const row of rows) {
+    const code = row["Product"];
+    if (!code) continue;
+    const num = (v, d) => { const n = parseFloat(v); return isFinite(n) ? n : d; };
+    const odMin = num(row["O.D. Min"]), odMax = num(row["O.D. Max"]), odStep = num(row["O.D. Least Count"], 0.1);
+    const idMin = num(row["I.D. Min"]), idMax = num(row["I.D. Max"]), idStep = num(row["I.D. Least Count"], 0.1);
+    const brMin = num(row["Braiding O.D. Min"]), brMax = num(row["Braiding O.D. Max"]), brStep = num(row["Braiding O.D. Least Count"], 0.1);
+    const lenMin = num(row["Cutting Length Min"]), lenMax = num(row["Cutting Length Max"]), lenStep = num(row["Cutting Length Least Count"], 5);
+    const pressMin = num(row["Crimping Press Min"]), pressMax = num(row["Crimping Press Max"]), pressStep = num(row["Crimping Press Least Count"], 4);
+    const loadMin = num(row["Crimping Load Min"]), loadMax = num(row["Crimping Load Max"]), loadStep = num(row["Crimping Load Least Count"], 5);
+    const flow = (row["Flow"] || "030,040,050,060,070,080,090,100,120,130").split(",").map(s => s.trim()).filter(Boolean);
+    out[code] = {
+      label: code,
+      desc: row["Description"] || "",
+      masters: {
+        od: row["O.D. Master Used"] || "",
+        idSpec: row["I.D. Spec Master Used"] || "",
+        idMeasured: row["I.D. Measured Master Used"] || "",
+        braidingOd: row["Braiding O.D. Master Used"] || "",
+      },
+      extruder: {
+        od: `${odMin.toFixed(2)}–${odMax.toFixed(2)} mm`, odBands: buildBands(odMin, odMax, odStep, true),
+        id: `${idMin.toFixed(2)}–${idMax.toFixed(2)} mm`, idBands: buildBands(idMin, idMax, idStep, true),
+      },
+      braiding: {
+        od: `${brMin.toFixed(2)}–${brMax.toFixed(2)} mm`, odBands: buildBands(brMin, brMax, brStep, false),
+        pitch: row["Braiding Pitch"] || "2.00–2.50 mm",
+        machines: parseInt(row["Braiding Machines"], 10) || 18,
+      },
+      cutting: {
+        len: `${fmtRange(lenMin)}–${fmtRange(lenMax)} mm`, lenBands: buildBands(lenMin, lenMax, lenStep, false),
+      },
+      crimping: {
+        pressBands: buildBands(pressMin, pressMax, pressStep, true),
+        loadBands: buildBands(loadMin, loadMax, loadStep, true),
+      },
+      flow,
+    };
+  }
+  return out;
+}
+function fmtRange(n) { return isFinite(n) ? (Number.isInteger(n) ? String(n) : n.toFixed(2)) : "?"; }
+
+// Fetches the live "Products" tab, caches it, and swaps it in. Called once from
+// boot(). Never blocks the UI — the app is already usable on PRODUCTS_FALLBACK (or
+// the last cached copy) the instant the page loads; this just upgrades it in place
+// and re-renders if the sheet is reachable.
+async function loadLiveProducts() {
+  try {
+    const cachedRaw = localStorage.getItem(PRODUCTS_CACHE_KEY);
+    if (cachedRaw) {
+      const cachedRows = JSON.parse(cachedRaw);
+      const parsed = parseProductsFromRows(cachedRows);
+      if (Object.keys(parsed).length) { PRODUCTS = parsed; render(); }
+    }
+  } catch (e) { /* corrupt cache, ignore and keep fallback */ }
+
+  try {
+    // Reuses the existing /api/log endpoint's "?sheet=" support (already deployed,
+    // already reads any tab by name) instead of adding a brand-new API file.
+    const res = await fetch("/api/log?sheet=Products", { cache: "no-store" });
+    if (!res.ok) throw new Error("bad status " + res.status);
+    const json = await res.json();
+    const rows = json.rows || [];
+    const parsed = parseProductsFromRows(rows);
+    if (Object.keys(parsed).length) {
+      PRODUCTS = parsed;
+      localStorage.setItem(PRODUCTS_CACHE_KEY, JSON.stringify(rows));
+      render();
+    }
+  } catch (e) {
+    // Network/API problem — we already fell back to cache (or PRODUCTS_FALLBACK)
+    // above, so the app keeps working with the best data available. Nothing to do.
+    console.warn("loadLiveProducts: using fallback/cached product data —", e.message);
+  }
+}
 
 const OPERATORS   = ["Alam","Amar","Amit","Anish","Anita","Ankit","Chintu","Devender","Dinesh","Durga Prasad","Geeta","Gurdeep","Jinku","Kailsah","Mangal","Rajesh","Rakesh","Sahil","Sailesh","Sulekha","Pooja","Rajender","Choote Chowdhary","Kiran Bharai","Other"];
 const SUPERVISORS = ["Saksham","QA Manager","Shift Supervisor","Other"];
@@ -4016,6 +4142,7 @@ function discardSession() {
 }
 
 function boot() {
+  loadLiveProducts(); // fire-and-forget: upgrades PRODUCTS in place + re-renders when ready
   const saved = loadState();
   if (hasMeaningfulProgress(saved)) {
     window.__resumeData = saved;
