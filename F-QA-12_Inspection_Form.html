@@ -192,6 +192,23 @@ select:focus, input[type="date"]:focus { border-color: #2563eb; }
 <script>
 
 // ═══════════════════════════════════════════════
+// API AUTH
+// /api/log and /api/submit reject any request without this header (see api/_google.js's
+// isAuthorized()) — this is a real, publicly-readable value (anyone can view-source it,
+// same as any client-side secret), so it does not stop a determined, targeted attacker.
+// What it DOES stop: the zero-effort case — automated scanners, drive-by cross-origin
+// requests, and anyone who finds these two URLs without ever having looked at this app's
+// code. Structural/destructive modes (grow/createSheet/rename) require a SEPARATE, stronger
+// secret that is deliberately never sent from here — see isAdminAuthorized() — so having
+// this value alone is not enough to restructure the spreadsheet.
+// ═══════════════════════════════════════════════
+const APP_SHARED_SECRET = "ICJsa5kPbp1-1gKVGaWBBOowQ5R67MZp";
+function apiFetch(url, opts) {
+  const headers = Object.assign({ "x-app-secret": APP_SHARED_SECRET }, opts && opts.headers);
+  return fetch(url, Object.assign({}, opts, { headers }));
+}
+
+// ═══════════════════════════════════════════════
 // PRODUCT DATABASE
 // ═══════════════════════════════════════════════
 // PRODUCTS_FALLBACK is the last-resort product config baked into the app itself.
@@ -1877,7 +1894,7 @@ const PINS_TAB = "PINs";
 const LAST_DEVICE_USER_KEY = "fqa12_last_device_user_v1";
 
 async function fetchDevicePins() {
-  const res = await fetch(`/api/log?sheet=${encodeURIComponent(PINS_TAB)}`, { cache: "no-store" });
+  const res = await apiFetch(`/api/log?sheet=${encodeURIComponent(PINS_TAB)}`, { cache: "no-store" });
   const data = await res.json();
   if (!res.ok) throw new Error((data && data.error && (data.error.error?.message || data.error)) || "Couldn't reach the PIN list.");
   return data.rows || [];
@@ -1909,7 +1926,7 @@ async function verifyDevicePin(name, enteredPin) {
       return false;
     }
     try {
-      const res = await fetch("/api/submit", {
+      const res = await apiFetch("/api/submit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode: "update", range: `${PINS_TAB}!B${row.__row}:B${row.__row}`, rows: [[enteredPin.trim()]] })
@@ -2006,7 +2023,7 @@ async function refreshSheetBatches() {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 20000);
   try {
-    const res = await fetch("/api/log", { cache: "no-store", signal: controller.signal });
+    const res = await apiFetch("/api/log", { cache: "no-store", signal: controller.signal });
     const data = await res.json();
     if (!res.ok) throw new Error((data && data.error && (data.error.error?.message || data.error)) || "Couldn't load batches");
     S.sheetBatchReg = buildSheetBatchRegistry(data.rows || []);
@@ -3293,7 +3310,7 @@ function buildSheetRow() {
 // silently overwriting whatever unrelated data now sits at the stale row number.
 async function locateRow(rowNum, expectBatchNo, expectShift, expectDate) {
   try {
-    const res = await fetch(`/api/log?date=${encodeURIComponent(expectDate || "")}`, { cache: "no-store" });
+    const res = await apiFetch(`/api/log?date=${encodeURIComponent(expectDate || "")}`, { cache: "no-store" });
     if (!res.ok) return rowNum || null; // can't verify — fall back to trusting the cached number
     const data = await res.json();
     const rows = (data && data.rows) || [];
@@ -3321,7 +3338,7 @@ let lastSavedHeaderEnsured = false;
 async function ensureLastSavedHeader() {
   if (lastSavedHeaderEnsured) return;
   try {
-    await fetch("/api/submit", {
+    await apiFetch("/api/submit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode: "update", range: `${LAST_SAVED_COL}1:${LAST_SAVED_COL}1`, rows: [[LAST_SAVED_COL_NAME]] })
@@ -3348,7 +3365,7 @@ async function submitToSheet(isRetry) {
     let data;
     if (rowNum) {
       const range = `A${rowNum}:${colLetter(SHEET_DATA_COLS)}${rowNum}`;
-      const res = await fetch("/api/submit", {
+      const res = await apiFetch("/api/submit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode: "update", range, rows: [row] })
@@ -3359,7 +3376,7 @@ async function submitToSheet(isRetry) {
         throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
       }
     } else {
-      const res = await fetch("/api/submit", {
+      const res = await apiFetch("/api/submit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ rows: [row] })
@@ -3395,7 +3412,7 @@ async function submitToSheet(isRetry) {
     // comment above warns about: it's confirmed before continuing, and same as the main row
     // write above, its failure falls through to this function's existing retry/error path
     // rather than failing silently.
-    const lastSavedRes = await fetch("/api/submit", {
+    const lastSavedRes = await apiFetch("/api/submit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode: "update", range: `${LAST_SAVED_COL}${rowNum}:${LAST_SAVED_COL}${rowNum}`, rows: [[new Date().toISOString()]] })
@@ -3807,7 +3824,7 @@ async function openBatchReport(base, day, fromScreen) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 20000);
   try {
-    const res = await fetch(`/api/log?search=${encodeURIComponent(base)}`, { cache: "no-store", signal: controller.signal });
+    const res = await apiFetch(`/api/log?search=${encodeURIComponent(base)}`, { cache: "no-store", signal: controller.signal });
     const data = await res.json();
     if (!res.ok) {
       const msg = (data && data.error && (data.error.error?.message || data.error)) || "Couldn't load this batch.";
@@ -3995,7 +4012,7 @@ async function runLogSearch() {
     if (S.logFilters.date) params.set("date", S.logFilters.date);
     if (S.logFilters.product && PRODUCTS[S.logFilters.product]) params.set("product", PRODUCTS[S.logFilters.product].label);
     if (S.logFilters.search) params.set("search", S.logFilters.search);
-    const res = await fetch(`/api/log?${params.toString()}`, { cache: "no-store", signal: controller.signal });
+    const res = await apiFetch(`/api/log?${params.toString()}`, { cache: "no-store", signal: controller.signal });
     const data = await res.json();
     if (!res.ok) {
       const msg = (data && data.error && (data.error.error?.message || data.error)) || "Search failed";
@@ -4078,7 +4095,7 @@ async function loadVrList() {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 20000);
   try {
-    const res = await fetch("/api/log", { cache: "no-store", signal: controller.signal });
+    const res = await apiFetch("/api/log", { cache: "no-store", signal: controller.signal });
     const data = await res.json();
     if (!res.ok) {
       const msg = (data && data.error && (data.error.error?.message || data.error)) || "Search failed";
@@ -4371,7 +4388,7 @@ async function verifyVrRow(rowNum, deviceId) {
     const endCol   = colLetter(SHEET_DATA_COLS + 4); // "Verified Thru Process"
     const range = `${startCol}${rowNum}:${endCol}${rowNum}`;
     const verifiedAt = new Date().toLocaleString("en-IN");
-    const res = await fetch("/api/submit", {
+    const res = await apiFetch("/api/submit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode: "update", range, rows: [[S.vrName, verifiedAt, S.vrName || "", newThru || ""]] })
