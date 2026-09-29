@@ -31,6 +31,14 @@ select:focus, input[type="date"]:focus { border-color: #2563eb; }
 .shift-btn.on { background: #eff6ff; border-color: #2563eb; color: #2563eb; }
 .shift-btn.locked { opacity: .45; cursor: not-allowed; background: #f8fafc; }
 
+.batch-card { border: 2px solid #e2e8f0; border-radius: 12px; padding: 12px 14px; margin-bottom: 8px; cursor: pointer; background: white; }
+.batch-card.selected { border-color: #2563eb; background: #eff6ff; }
+.batch-card-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.batch-card-product { font-size: 15px; font-weight: 800; color: #1e3a5f; }
+.batch-card-no { font-size: 12px; color: #64748b; white-space: nowrap; }
+.batch-card-meta { font-size: 12px; color: #64748b; margin-top: 2px; }
+.batch-card-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+
 .proc-badge   { background: #1e3a5f; color: white; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; display: inline-block; margin-bottom: 8px; }
 .proc-title   { font-size: 17px; font-weight: 700; }
 .proc-machine { font-size: 13px; color: #64748b; margin-top: 2px; }
@@ -1515,47 +1523,85 @@ const CLOUDINARY_CLOUD_NAME   = "aqtkoy2b";
 const CLOUDINARY_UPLOAD_PRESET = "Konneckt";
 const PHOTO_MAX_DIM = 1600; // px — keeps uploads fast on factory WiFi
 
-function stampImage(file) {
+// Decode a selected photo and downscale it to PHOTO_MAX_DIM as cheaply as the browser allows.
+//
+// The original path was readAsDataURL() -> new Image() -> canvas. For a 12MP phone photo
+// that meant a ~7MB base64 string held in the JS heap PLUS a full-resolution (~48MB) decode
+// on the MAIN THREAD before any resize happened — which is the hang operators were hitting
+// while capturing photos mid-process. createImageBitmap() decodes off the main thread and
+// resizes during decode, so the UI keeps responding on a mid-range factory phone.
+//
+// imageOrientation:"from-image" is required, not cosmetic: <img> applies EXIF rotation
+// automatically, createImageBitmap does NOT by default, and silently sideways evidence
+// photos would be a regression.
+async function decodeScaledPhoto(file) {
+  if (typeof createImageBitmap === "function") {
+    let full = null;
+    try {
+      full = await createImageBitmap(file, { imageOrientation: "from-image" });
+      const scale = Math.min(1, PHOTO_MAX_DIM / Math.max(full.width, full.height));
+      if (scale === 1) return full;
+      const small = await createImageBitmap(full, 0, 0, full.width, full.height, {
+        resizeWidth:   Math.max(1, Math.round(full.width  * scale)),
+        resizeHeight:  Math.max(1, Math.round(full.height * scale)),
+        resizeQuality: "high"
+      });
+      full.close();
+      return small;
+    } catch (e) {
+      if (full && full.close) full.close();
+      // fall through to the element path below
+    }
+  }
+  // Fallback for browsers without createImageBitmap. Object URL rather than data URL —
+  // same decode cost, but without also holding a multi-megabyte base64 string.
   return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error("Could not read photo"));
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onerror = () => reject(new Error("Could not decode photo"));
-      img.onload = () => {
-        let w = img.width, h = img.height;
-        if (w > PHOTO_MAX_DIM || h > PHOTO_MAX_DIM) {
-          const scale = PHOTO_MAX_DIM / Math.max(w, h);
-          w = Math.round(w * scale); h = Math.round(h * scale);
-        }
-        const canvas = document.createElement("canvas");
-        canvas.width = w; canvas.height = h;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0, w, h);
-
-        const stamp = new Date().toLocaleString("en-IN", {
-          day:"2-digit", month:"short", year:"numeric",
-          hour:"2-digit", minute:"2-digit", second:"2-digit"
-        });
-        const fontSize = Math.max(16, Math.round(w * 0.028));
-        ctx.font = `bold ${fontSize}px Arial`;
-        const textW = ctx.measureText(stamp).width;
-        const pad = fontSize * 0.5;
-        const boxW = textW + pad * 2, boxH = fontSize + pad * 1.4;
-        const x = w - boxW - fontSize * 0.4, y = h - boxH - fontSize * 0.4;
-
-        ctx.fillStyle = "rgba(0,0,0,0.55)";
-        ctx.fillRect(x, y, boxW, boxH);
-        ctx.fillStyle = "#FFD400";
-        ctx.textBaseline = "middle";
-        ctx.fillText(stamp, x + pad, y + boxH / 2);
-
-        canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Could not encode photo")), "image/jpeg", 0.85);
-      };
-      img.src = e.target.result;
-    };
-    reader.readAsDataURL(file);
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload  = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Could not decode photo")); };
+    img.src = url;
   });
+}
+
+async function stampImage(file) {
+  const src = await decodeScaledPhoto(file);
+  let w = src.naturalWidth  || src.width;
+  let h = src.naturalHeight || src.height;
+  // createImageBitmap already resized during decode; only the fallback path reaches here
+  // still oversized.
+  if (w > PHOTO_MAX_DIM || h > PHOTO_MAX_DIM) {
+    const scale = PHOTO_MAX_DIM / Math.max(w, h);
+    w = Math.round(w * scale); h = Math.round(h * scale);
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(src, 0, 0, w, h);
+  if (src.close) src.close();   // free the native bitmap immediately
+
+  const stamp = new Date().toLocaleString("en-IN", {
+    day:"2-digit", month:"short", year:"numeric",
+    hour:"2-digit", minute:"2-digit", second:"2-digit"
+  });
+  const fontSize = Math.max(16, Math.round(w * 0.028));
+  ctx.font = `bold ${fontSize}px Arial`;
+  const textW = ctx.measureText(stamp).width;
+  const pad = fontSize * 0.5;
+  const boxW = textW + pad * 2, boxH = fontSize + pad * 1.4;
+  const x = w - boxW - fontSize * 0.4, y = h - boxH - fontSize * 0.4;
+
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillRect(x, y, boxW, boxH);
+  ctx.fillStyle = "#FFD400";
+  ctx.textBaseline = "middle";
+  ctx.fillText(stamp, x + pad, y + boxH / 2);
+
+  const blob = await new Promise((resolve, reject) => {
+    canvas.toBlob(b => b ? resolve(b) : reject(new Error("Could not encode photo")), "image/jpeg", 0.85);
+  });
+  canvas.width = canvas.height = 0;   // release the backing store on memory-tight phones
+  return blob;
 }
 
 async function uploadToCloudinary(blob, context) {
@@ -1639,16 +1685,71 @@ function rPhotoBadge(entry, inputId) {
   return `<div class="photo-row" onclick="document.getElementById('${inputId}').click()">${badge}</div>`;
 }
 
+// The single source of truth for a blank session. Used for the initial state, by
+// newInspection(), AND as the base that a restored session is merged onto — so a saved
+// payload written by an older version of this file (or one deliberately slimmed down by
+// saveState's fallback below) can never leave S missing a field the render code expects.
+function freshState() {
+  return {
+    screen:"setup", product:"", date:today(), shift:ROUND_LABELS[0], operator:"",
+    processIdx:0,
+    currentRound:0,
+    procOperators:{},
+    roundData:ROUND_LABELS.map(() => emptyRound()),
+    activeBraid:null,
+    supName:"", verified:{}, finalisedAt:"",
+    submitStatus:"", submitError:"",
+    batchBase:"", batchNo:"", batchDay:1, reportedThroughIdx:0, dayRowNum:null,
+    selectedBatch:"", batchSearch:"",
+    sheetBatchReg:null, sheetBatchRegLoading:false, sheetBatchRegError:"",
+    logFilters:{date:"",product:"",search:""}, logResults:null, logLoading:false, logError:"", logDetailRow:null,
+    batchReportFrom:"setup", batchReportBase:"", batchReportDay:1, batchReportRows:null, batchReportLoading:false, batchReportError:"",
+    vrPin:"", vrName:"", vrRows:null, vrLoading:false, vrError:"", vrDetailRow:null, vrJustVerified:false
+  };
+}
+
+// Caches of Sheet data and transient UI status — deliberately NOT persisted.
+//
+// This is a data-loss fix, not a tidiness one. saveState() used to stringify the whole of
+// S, and S.sheetBatchReg / logResults / vrRows / batchReportRows each hold RAW sheet rows
+// (buildSheetBatchRegistry pushes them straight in; /api/log returns up to 500 rows of ~79
+// columns). One trip through the Inspection Log was enough to push the payload past the
+// ~5MB localStorage quota — after which setItem() threw on EVERY subsequent save and the
+// old `catch (e) {}` swallowed it silently. Autosave was dead from that point on, nothing
+// said so, and the next hang or Back press lost the whole inspection. All of these are
+// re-fetched on demand, and mergedBatchRegistry() already handles sheetBatchReg === null.
+const EPHEMERAL_KEYS = [
+  "sheetBatchReg", "sheetBatchRegLoading", "sheetBatchRegError",
+  "logResults", "logLoading", "logError", "logDetailRow",
+  "batchReportRows", "batchReportLoading", "batchReportError",
+  "vrRows", "vrLoading", "vrError", "vrDetailRow"
+];
+
+// Set when a save could not be completed. Surfaced in the UI by render() — a silent
+// autosave failure is the worst possible failure mode for this form.
+let saveFailed = false;
+
 function saveState() {
+  S.savedAt = new Date().toISOString();
+  const payload = {};
+  Object.keys(S).forEach(k => { if (!EPHEMERAL_KEYS.includes(k)) payload[k] = S[k]; });
   try {
-    S.savedAt = new Date().toISOString();
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(S));
-  } catch (e) { /* storage unavailable or full — fail silently */ }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    saveFailed = false;
+    return true;
+  } catch (e) {
+    saveFailed = true;
+    return false;
+  }
 }
 function loadState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : null;
+    if (!raw) return null;
+    const saved = JSON.parse(raw);
+    if (!saved || typeof saved !== "object") return null;
+    // Merge onto a fresh state so a slimmed or older payload still yields a complete S.
+    return Object.assign(freshState(), saved);
   } catch (e) { return null; }
 }
 function clearState() {
@@ -1658,21 +1759,20 @@ function hasMeaningfulProgress(saved) {
   return !!saved && (saved.screen !== "setup" || !!saved.product);
 }
 
-let S = {
-  screen:"setup", product:"", date:today(), shift:ROUND_LABELS[0], operator:"",
-  processIdx:0,
-  currentRound:0,
-  procOperators:{},
-  roundData:ROUND_LABELS.map(() => emptyRound()),
-  activeBraid:null,
-  supName:"", verified:{}, finalisedAt:"",
-  submitStatus:"", submitError:"",
-  batchBase:"", batchNo:"", batchDay:1, reportedThroughIdx:0, dayRowNum:null,
-  sheetBatchReg:null, sheetBatchRegLoading:false, sheetBatchRegError:"",
-  logFilters:{date:"",product:"",search:""}, logResults:null, logLoading:false, logError:"", logDetailRow:null,
-  batchReportFrom:"setup", batchReportBase:"", batchReportDay:1, batchReportRows:null, batchReportLoading:false, batchReportError:"",
-  vrPin:"", vrName:"", vrRows:null, vrLoading:false, vrError:"", vrDetailRow:null, vrJustVerified:false
-};
+// How many readings exist across every round of the current session. This is the number
+// that decides whether a destructive action needs confirming, so it counts anything an
+// operator would recognise as their work — entries and braiding machines alike.
+function recordedReadingCount() {
+  if (!Array.isArray(S.roundData)) return 0;
+  return S.roundData.reduce((n, round) => {
+    if (!round) return n;
+    const entries  = Object.values(round.entries  || {}).filter(v => v && v.result).length;
+    const braiding = Object.values(round.braiding || {}).filter(v => v && v.result).length;
+    return n + entries + braiding;
+  }, 0);
+}
+
+let S = freshState();
 
 // helpers so rest of code stays concise
 function curEntries()  { return S.roundData[S.currentRound].entries;  }
@@ -1858,8 +1958,14 @@ function buildSheetBatchRegistry(rows) {
     const { base, day } = parseBatchNo(rawBatch);
     const roundIdx = ROUND_LABELS.indexOf(r["Shift / Sample"]);
     if (roundIdx < 0) return;
-    const entry = reg[base] || { product: "", lastDay: 0, lastDate: "", rounds: {} };
+    const entry = reg[base] || { product: "", lastDay: 0, lastDate: "", lastSavedAt: "", rounds: {} };
     if (day >= entry.lastDay) { entry.lastDay = day; entry.lastDate = r["Date"] || entry.lastDate; entry.product = r["Product"] || entry.product; }
+    // Most recent save across EVERY round of this batch, independent of the day-number
+    // comparison above (that's about calendar-day-of-batch-continuation, a different axis
+    // than "which row was physically saved most recently"). ISO strings compare correctly
+    // with plain string comparison, so no Date parsing is needed here.
+    const savedAt = r["Last Saved At"] || "";
+    if (savedAt > entry.lastSavedAt) entry.lastSavedAt = savedAt;
     if (!entry.rounds[roundIdx]) entry.rounds[roundIdx] = [];
     entry.rounds[roundIdx].push(r);
     reg[base] = entry;
@@ -1955,6 +2061,9 @@ function mergedBatchRegistry() {
       product:  (s && s.product) || (l && l.product) || "",
       lastDay:  Math.max((s && s.lastDay) || 0, (l && l.lastDay) || 0),
       lastDate: (s && s.lastDate) || (l && l.lastDate) || "",
+      // Sheet-only, same as verifiedThru above — the local (per-device) registry never
+      // captured this, only the Sheet does, since it's written by submitToSheet() itself.
+      lastSavedAt: (s && s.lastSavedAt) || "",
       rounds
     };
   });
@@ -2040,8 +2149,19 @@ function allEntryKeys() {
 function render() {
   const fns = { setup:rSetup, process:rProcess, review:rReview, submitted:rSubmitted, report:rReport, log:rLog, logdetail:rLogDetail,
     batchreport:rBatchReport, paused:rPaused, vrpin:rVrPin, vrname:rVrName, vrlist:rVrList, vrdetail:rVrDetail };
-  document.getElementById("app").innerHTML = fns[S.screen]();
+  // Save BEFORE painting, so that if the save fails this very paint can say so.
   saveState();
+  document.getElementById("app").innerHTML = saveWarning() + fns[S.screen]();
+}
+
+// A failed autosave used to be completely invisible. If one ever fails now, say so on
+// every screen, in the operator's terms, until a save succeeds again.
+function saveWarning() {
+  if (!saveFailed) return "";
+  return `<div class="alert" style="background:#fef2f2;color:#991b1b;border-color:#dc2626;">
+    ⚠ <strong>This device could not save your progress.</strong> Don't close this page or press Back.
+    Use "⏸ Save Progress &amp; Continue Later" now to push your work to the Sheet.
+  </div>`;
 }
 
 // ═══════════════════════════════════════════════
@@ -2076,6 +2196,67 @@ function approvalSampleVerifiedThru() {
   return (info && info.rounds && info.rounds[0] && info.rounds[0].verifiedThru) || null;
 }
 
+// Per-shift status chips for one batch card — same "V-<procNo>" / "not verified yet"
+// wording the old dropdown's option text used, just rendered as badges instead of packed
+// into one run-on string. A round absent from `rounds` (never touched) gets no chip at
+// all, matching the old behavior exactly.
+function batchStatusBadges(info) {
+  const rounds = info.rounds || {};
+  return ROUND_LABELS.map((lbl, i) => {
+    const r = rounds[i];
+    if (!r) return "";
+    return r.verifiedThru
+      ? `<span class="badge b-ok">${esc(lbl)}: V-${esc(r.verifiedThru)}</span>`
+      : `<span class="badge b-na">${esc(lbl)}: not verified</span>`;
+  }).join("");
+}
+
+// info.lastDate is a bare "YYYY-MM-DD" (the Sheet's "Date" column — no time-of-day is
+// ever captured for it). Reformatted via string split rather than `new Date(iso)` to avoid
+// the same UTC-rollback timezone trap called out on today() — the date string round-trips
+// exactly regardless of which timezone the browser is in.
+function ddmmyyyy(iso) {
+  const parts = (iso || "").split("-");
+  if (parts.length !== 3) return iso || "—";
+  const [y, m, d] = parts;
+  return `${d}-${m}-${y}`;
+}
+
+// info.lastSavedAt (when present — see Block C on SHEET_HEADERS) is a full
+// `new Date().toISOString()` instant, unambiguous regardless of timezone, so parsing it
+// with `new Date(iso)` here is safe — unlike the bare calendar-date string ddmmyyyy() above.
+// Rendered in the viewing device's own local time, same as every other timestamp this app
+// already shows (e.g. fmtSavedAt()).
+function ddmmyyyyTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  let h = d.getHours();
+  const ampm = h >= 12 ? "PM" : "AM";
+  h = h % 12 || 12;
+  const min = String(d.getMinutes()).padStart(2, "0");
+  return `${dd}-${mm}-${d.getFullYear()}, ${String(h).padStart(2, "0")}:${min} ${ampm}`;
+}
+
+function batchCardHtml(base, info) {
+  const selected = S.selectedBatch === base;
+  const productLabel = (PRODUCTS[info.product] && PRODUCTS[info.product].label) || info.product || "Unknown product";
+  const badges = batchStatusBadges(info);
+  // lastSavedAt only exists for rows saved after Block C shipped — older/untouched batches
+  // fall back to the date-only value, same as before.
+  const lastWorked = ddmmyyyyTime(info.lastSavedAt) || ddmmyyyy(info.lastDate);
+  return `<div class="batch-card${selected ? " selected" : ""}" onclick="S.selectedBatch='${esc(base)}';render()">
+    <div class="batch-card-top">
+      <span class="batch-card-product">${esc(productLabel)}</span>
+      <span class="batch-card-no">${esc(base)}</span>
+    </div>
+    <div class="batch-card-meta">Day ${info.lastDay} · last worked ${esc(lastWorked)}</div>
+    ${badges ? `<div class="batch-card-badges">${badges}</div>` : ""}
+  </div>`;
+}
+
 function rSetup() {
   // Sheet-backed batch list is fetched once per app load (and on manual refresh) so
   // "Continue Existing Batch" shows the same batches regardless of which device is asking.
@@ -2097,16 +2278,23 @@ function rSetup() {
   const shiftLocked = enforceShiftGate();
 
   const registry  = mergedBatchRegistry();
-  const batchKeys = Object.keys(registry);
-  const contOpts  = batchKeys.map(b => {
-    const rounds = registry[b].rounds || {};
-    const roundSummary = ROUND_LABELS.map((lbl, i) => {
-      const r = rounds[i];
-      if (!r) return null;
-      return `${lbl}: ${r.verifiedThru ? "V-" + r.verifiedThru : "not verified yet"}`;
-    }).filter(Boolean).join(", ");
-    return `<option value="${b}">${b} — ${registry[b].product} (day ${registry[b].lastDay} last done ${registry[b].lastDate})${roundSummary ? " · " + roundSummary : ""}</option>`;
-  }).join("");
+  // Newest-worked batch first — the one an operator's continuing today is almost always
+  // near the top of the list, not buried under every batch the plant has ever run.
+  let batchKeys = Object.keys(registry).sort((a, b) =>
+    (registry[b].lastDate || "").localeCompare(registry[a].lastDate || "") || a.localeCompare(b));
+  // Whether the whole "Continue Existing Batch" card (search box included) shows at all —
+  // this must stay keyed off the UNFILTERED count, or a search with zero matches would
+  // hide the very search box needed to change/clear it.
+  const hasAnyBatches = batchKeys.length > 0;
+  if (S.batchSearch) {
+    const needle = S.batchSearch.toLowerCase();
+    batchKeys = batchKeys.filter(b => {
+      const info = registry[b];
+      const productLabel = (PRODUCTS[info.product] && PRODUCTS[info.product].label) || info.product || "";
+      return b.toLowerCase().includes(needle) || productLabel.toLowerCase().includes(needle);
+    });
+  }
+  const contCards = batchKeys.map(b => batchCardHtml(b, registry[b])).join("");
 
   return `
     <div class="header">
@@ -2143,7 +2331,7 @@ function rSetup() {
       <button class="btn-outline" onclick="S.screen='log';render()">📊 View Inspection Log</button>
       <button class="btn-outline" style="background:#faf5ff;color:#7e22ce;border-color:#9333ea;" onclick="openVerifyReports()">🔒 Verify Reports</button>
     </div>
-    ${batchKeys.length ? `
+    ${hasAnyBatches ? `
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
         <div style="font-weight:700;font-size:15px;">↻ Continue Existing Batch</div>
@@ -2151,8 +2339,14 @@ function rSetup() {
       </div>
       <div style="font-size:12px;color:#64748b;margin-bottom:10px;">Pick a batch worked on a previous day, then select Prepared By, PIN, and Shift above before continuing. This list includes batches worked on any device.</div>
       ${S.sheetBatchRegError ? `<div class="alert" style="font-size:12px;">⚠ Couldn't sync with the Sheet: ${esc(S.sheetBatchRegError)} — showing only what's known on this device. <span style="text-decoration:underline;cursor:pointer;" onclick="refreshSheetBatches()">Retry</span></div>` : ""}
-      <label style="margin-top:0;">Batch Number</label>
-      <select id="s-batch"><option value="">— Select batch —</option>${contOpts}</select>
+      <label style="margin-top:0;">Search</label>
+      <input type="text" placeholder="Search by batch number or product…"
+        value="${(S.batchSearch||"").replace(/"/g,"&quot;")}"
+        onchange="S.batchSearch=this.value;render()"
+        style="width:100%;padding:11px 13px;border:2px solid #e2e8f0;border-radius:10px;font-size:14px;outline:none;margin-bottom:10px;">
+      <div class="batch-card-list">
+        ${contCards || `<div style="text-align:center;font-size:12px;color:#94a3b8;padding:10px 0;">No batches match your search.</div>`}
+      </div>
       <button class="btn-outline" style="background:#fff7ed;color:#c2410c;border-color:#f97316;" onclick="continueBatchClicked()">↻ Continue This Batch →</button>
       <button class="btn-outline" style="background:#eff6ff;color:#1d4ed8;border-color:#2563eb;" onclick="viewBatchReportClicked()">📄 View Full Report (All Shifts)</button>
     </div>` : (S.sheetBatchRegLoading ? `<div style="text-align:center;font-size:12px;color:#94a3b8;margin-top:4px;">Checking for batches from other devices…</div>` : "")}
@@ -2182,6 +2376,21 @@ async function continueBatchClicked() {
 }
 
 function startInspection() {
+  // This function resets S.roundData (below), and render() then persists that reset over
+  // the localStorage backup — so a stray tap on "Begin Inspection" while an inspection was
+  // still live destroyed every recorded reading, irrecoverably. The batch-already-exists
+  // confirm() further down does NOT cover this: registerBatchDay() only runs at
+  // pause/submit/finalise time, so an in-progress batch isn't in the registry yet and that
+  // branch is skipped entirely. navBack() now refuses to strand an operator here, but this
+  // is the authoritative guard — nothing gets wiped without an explicit yes.
+  const inProgress = recordedReadingCount();
+  if (inProgress > 0 && !confirm(
+    `WARNING — an inspection is already in progress with ${inProgress} recorded reading${inProgress === 1 ? "" : "s"}.\n\n` +
+    `Starting a new inspection will PERMANENTLY DELETE ${inProgress === 1 ? "it" : "them"}. This cannot be undone.\n\n` +
+    `To keep your work, press Cancel and use "⏸ Save Progress & Continue Later" instead.\n\n` +
+    `Press OK only if you are sure you want to discard it.`
+  )) return;
+
   S.product  = document.getElementById("s-product").value;
   S.date     = document.getElementById("s-date").value;
   S.operator = document.getElementById("s-op").value;
@@ -2243,7 +2452,7 @@ function startInspection() {
 // progress for that round carries forward (nothing is wiped). Which round is "active" is
 // entirely determined by whichever Shift button is selected here, not by an in-app tab.
 function continueBatch() {
-  const base = document.getElementById("s-batch").value;
+  const base = S.selectedBatch;
   if (!base) { alert("Please select a batch to continue."); return; }
   const op = document.getElementById("s-op").value;
   if (!op) { alert("Please select an operator (Prepared By)."); return; }
@@ -2383,7 +2592,10 @@ function rProcess() {
         ${S.processIdx===total-1?"Review All →":"Next →"}
       </button>
     </div>
-    <button class="btn-outline no-print" style="background:#fefce8;color:#854d0e;border-color:#eab308;margin-top:10px;" onclick="pauseBatch()">⏸ Save Progress &amp; Continue Later</button>`;
+    <button class="btn-outline no-print" style="background:#fefce8;color:#854d0e;border-color:#eab308;margin-top:10px;" onclick="pauseBatch()">⏸ Save Progress &amp; Continue Later</button>
+    <div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:8px;">
+      ${S.savedAt ? `&#10003; Saved on this device automatically &middot; ${new Date(S.savedAt).toLocaleTimeString("en-IN", { hour:"2-digit", minute:"2-digit" })}` : ""}
+    </div>`;
 }
 
 // ── normal checks ──
@@ -2666,7 +2878,30 @@ function recordManual(key) {
 }
 
 function navBack() {
-  if (S.processIdx===0) S.screen="setup"; else S.processIdx--;
+  // Back from the FIRST process is the one press that drops an operator onto Setup, where
+  // "Begin Inspection" wipes the session. Don't let that happen by accident — offer the
+  // checkpoint button that exists for exactly this purpose instead.
+  if (S.processIdx === 0) {
+    const n = recordedReadingCount();
+    if (n > 0) {
+      const leave = confirm(
+        `Inspection in progress — ${n} reading${n === 1 ? "" : "s"} recorded.\n\n` +
+        `Back would leave this inspection.\n\n` +
+        `OK — save progress to the Sheet and continue later\n` +
+        `Cancel — stay in the inspection`
+      );
+      if (!leave) return;
+      // hasNewProgressToReport() is false when everything here is already checkpointed;
+      // pauseBatch() would just alert and refuse, stranding the operator with no way out,
+      // so in that case going to Setup is both safe and the only sensible move.
+      if (hasNewProgressToReport()) { pauseBatch(); return; }
+      S.screen = "setup";
+    } else {
+      S.screen = "setup";
+    }
+  } else {
+    S.processIdx--;
+  }
   S.activeBraid = null; render();
 }
 function navNext() {
@@ -2934,16 +3169,26 @@ const SHEET_HEADERS = [
   // ── 130 Final Appearance ──
   "Appearance (P130)",
   // ── Block B: Verify Reports only, see above ──
-  "Verified By","Verified At","Verified Device ID","Verified Thru Process"
+  "Verified By","Verified At","Verified Device ID","Verified Thru Process",
+  // ── Block C: operator-written, like Block A, but deliberately placed AFTER Block B
+  // instead of inside it. Block A's write range is a single contiguous
+  // A1:{SHEET_DATA_COLS} block — inserting a column anywhere inside it (or between it and
+  // Block B) would shift every column after the insertion point, which requires physically
+  // moving every existing row's data in the live Sheet, not just adding a column. Appending
+  // past Block B needs no such migration: it's pure growth, nothing existing moves. ──
+  "Last Saved At"
 ];
 // Number of columns in Block A (the operator's single atomic write). Everything from here
 // to the end of SHEET_HEADERS is Block B (Verify Reports' single atomic write).
 const SHEET_DATA_COLS = 75;
+// Block C (see comment above) — where each save's own timestamp goes.
+const LAST_SAVED_COL_NAME = "Last Saved At";
 function colLetter(n) { // 1-indexed column number -> spreadsheet letter(s)
   let s = "";
   while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); }
   return s;
 }
+const LAST_SAVED_COL = colLetter(SHEET_HEADERS.indexOf(LAST_SAVED_COL_NAME) + 1);
 
 // Builds one full Block-A row (all SHEET_DATA_COLS columns, in the exact SHEET_HEADERS
 // order above) from a round's entries. Shared by buildSheetRows() (all rounds, unwindowed,
@@ -3064,6 +3309,27 @@ async function locateRow(rowNum, expectBatchNo, expectShift, expectDate) {
   }
 }
 
+// The Sheet's row 1 must actually contain "Last Saved At" at LAST_SAVED_COL for
+// /api/log's name-keyed row-object mapping to expose that column at all — an unlabeled
+// column would read back keyed under "" instead. This codebase's convention for schema
+// setup (see api/submit.js's grow/createSheet modes) is a one-time administrative step, not
+// something the app grows unprompted at runtime — so this only ever WRITES the header text
+// into a cell that must already exist in the grid; it does not expand the sheet's column
+// count itself. Gated to once per page session (writing the same text repeatedly is wasted
+// traffic, not wasted correctness); a failed attempt simply retries on the next page load.
+let lastSavedHeaderEnsured = false;
+async function ensureLastSavedHeader() {
+  if (lastSavedHeaderEnsured) return;
+  try {
+    await fetch("/api/submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "update", range: `${LAST_SAVED_COL}1:${LAST_SAVED_COL}1`, rows: [[LAST_SAVED_COL_NAME]] })
+    });
+  } catch (e) { /* best-effort — see comment above */ }
+  finally { lastSavedHeaderEnsured = true; }
+}
+
 // Same-day upsert: the FIRST save of a given calendar day for this round appends a fresh
 // row (and remembers its row number); any LATER save on that SAME calendar date updates
 // that exact row in place instead of appending another one. A genuinely new calendar
@@ -3120,6 +3386,26 @@ async function submitToSheet(isRetry) {
         roundLastDate: S.date
       });
     }
+
+    // Records this save's own timestamp in Block C (see SHEET_HEADERS), so "Continue
+    // Existing Batch" can show a real last-worked TIME, not just a date. Deliberately a
+    // SEPARATE, AWAITED write rather than folded into Block A's array — Block C sits past
+    // Block B specifically so adding it never touches Block A's/Block B's column math (see
+    // the Block C comment on SHEET_HEADERS). This is not the fire-and-forget pattern the
+    // comment above warns about: it's confirmed before continuing, and same as the main row
+    // write above, its failure falls through to this function's existing retry/error path
+    // rather than failing silently.
+    const lastSavedRes = await fetch("/api/submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "update", range: `${LAST_SAVED_COL}${rowNum}:${LAST_SAVED_COL}${rowNum}`, rows: [[new Date().toISOString()]] })
+    });
+    if (!lastSavedRes.ok) {
+      const lastSavedData = await lastSavedRes.json().catch(() => ({}));
+      const msg = (lastSavedData && lastSavedData.error && (lastSavedData.error.error?.message || lastSavedData.error)) || "Couldn't record save time";
+      throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+    }
+    await ensureLastSavedHeader(); // best-effort, see its own comment — never blocks this save
 
     // Device ID, the per-machine braiding photos, and the 030/050/060/080/100/130 checks
     // used to each be separate fire-and-forget follow-up requests after the main row —
@@ -3276,13 +3562,7 @@ function rReport() {
 
 function newInspection() {
   clearState();
-  S = { screen:"setup", product:"", date:today(), shift:ROUND_LABELS[0], operator:"",
-        processIdx:0, currentRound:0, procOperators:{},
-        roundData:ROUND_LABELS.map(() => emptyRound()),
-        activeBraid:null, supName:"", verified:{}, finalisedAt:"",
-        submitStatus:"", submitError:"",
-        batchBase:"", batchNo:"", batchDay:1, reportedThroughIdx:0, dayRowNum:null,
-        logFilters:{date:"",product:"",search:""}, logResults:null, logLoading:false, logError:"" };
+  S = freshState();
   render();
 }
 
@@ -3555,8 +3835,7 @@ async function openBatchReport(base, day, fromScreen) {
 // Prompts for which day if the batch has run more than one (rare — most batches finish in
 // a single day), since each day is its own page.
 function viewBatchReportClicked() {
-  const sel = document.getElementById("s-batch");
-  const base = sel ? sel.value : "";
+  const base = S.selectedBatch;
   if (!base) { alert("Please select a batch from the list first."); return; }
   const info = mergedBatchRegistry()[base];
   const lastDay = (info && info.lastDay) || 1;
@@ -4141,7 +4420,52 @@ function discardSession() {
   render();
 }
 
+// ── Hardware / gesture Back guard ──
+// Android's Back button and iOS's swipe-back navigate away from the entire page, and this
+// app never pushed a history entry — so mid-inspection they unloaded everything in memory.
+// The operator then landed on a fresh boot() whose "Discard & Start Fresh" button, or the
+// Setup screen's "Begin Inspection", destroyed the session in one tap.
+//
+// We keep one spare history entry parked at all times and translate a Back press into the
+// same in-app navigation the on-screen Back button performs, so the page itself is never
+// left while there is work in flight. Screens absent from this map (setup, submitted,
+// report) have nothing to protect: we don't re-park there, so a second press leaves
+// normally and the operator can still close the tab or navigate away.
+const BACK_TARGETS = {
+  process:     () => navBack(),
+  review:      () => { S.processIdx = buildProcesses(S.product).length - 1; S.screen = "process"; render(); },
+  log:         () => { S.screen = "setup"; render(); },
+  logdetail:   () => { S.screen = "log"; render(); },
+  batchreport: () => { S.screen = S.batchReportFrom || "setup"; render(); },
+  vrpin:       () => { S.screen = "setup"; render(); },
+  vrname:      () => { S.screen = "vrpin"; render(); },
+  vrlist:      () => { S.screen = "setup"; render(); },
+  vrdetail:    () => { S.screen = "vrlist"; render(); },
+  paused:      () => { S.screen = "setup"; render(); }
+};
+
+function parkHistoryEntry() {
+  try { history.pushState({ fqa12: true }, ""); } catch (e) {}
+}
+
+function installBackGuard() {
+  parkHistoryEntry();
+  window.addEventListener("popstate", () => {
+    const handler = BACK_TARGETS[S.screen];
+    if (!handler) return;      // let the press through — nothing in flight on this screen
+    parkHistoryEntry();        // re-park first, so the page is never actually left
+    handler();
+  });
+
+  // A phone can background or kill this tab at any moment — incoming call, app switch, low
+  // memory. pagehide and visibilitychange are the only events that fire reliably on mobile
+  // for that (beforeunload does not), so flush on the way out.
+  window.addEventListener("pagehide", saveState);
+  document.addEventListener("visibilitychange", () => { if (document.hidden) saveState(); });
+}
+
 function boot() {
+  installBackGuard();
   loadLiveProducts(); // fire-and-forget: upgrades PRODUCTS in place + re-renders when ready
   const saved = loadState();
   if (hasMeaningfulProgress(saved)) {
