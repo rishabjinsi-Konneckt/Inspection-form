@@ -1946,6 +1946,32 @@ async function verifyDevicePin(name, enteredPin) {
 // specific batch report (see openBatchReport()).
 function parseBatchNo(rawBatch) {
   const s = (rawBatch || "").trim();
+  // Some product codes themselves end in "-16" or "-19" (a size variant, e.g.
+  // "13ENBN40-16" meaning 16mm) — a naive "last -digits group is the day" regex
+  // can not tell that apart from a REAL day-continuation suffix like "-4" on
+  // "20268070-13ENBN45-4", and was misreading the product's own "-16"/"-19" as day
+  // 16/19. Fix: identify the actual product code first (matching against the real
+  // PRODUCTS list, longest code wins so "13ENBN40-16" isn't mistaken for "13ENBN40"),
+  // then only what's left after that is a day number and/or a same-day-run letter.
+  const dateMatch = s.match(/^(\d{8})-(.+)$/);
+  if (dateMatch && typeof PRODUCTS === "object") {
+    const datePart = dateMatch[1];
+    const rest = dateMatch[2];
+    const codes = Object.keys(PRODUCTS).sort((a, b) => b.length - a.length);
+    const matchedCode = codes.find(c => rest === c || rest.startsWith(c + "-"));
+    if (matchedCode) {
+      let remainder = rest.slice(matchedCode.length); // "", "-4", "-A", "-A-4", ...
+      let day = 1;
+      const dayAtEnd = remainder.match(/-(\d+)$/);
+      if (dayAtEnd) {
+        day = parseInt(dayAtEnd[1], 10);
+        remainder = remainder.slice(0, remainder.length - dayAtEnd[0].length);
+      }
+      return { base: `${datePart}-${matchedCode}${remainder}`, day };
+    }
+  }
+  // Fallback for anything that doesn't match a known product (shouldn't normally
+  // happen) — old behavior, better than crashing.
   const m = s.match(/^(.*)-(\d+)$/);
   return m ? { base: m[1], day: parseInt(m[2], 10) } : { base: s, day: 1 };
 }
