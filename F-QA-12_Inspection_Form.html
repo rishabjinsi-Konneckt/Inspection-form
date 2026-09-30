@@ -3004,6 +3004,11 @@ function rReview() {
     totalFails += Object.values(rd.entries).filter(e=>e.result==="FAIL").length;
     totalFails += Object.values(rd.braiding).filter(v=>v.result==="FAIL").length;
   });
+  // Same completeness check submitForVerification() actually enforces — the banner used to
+  // only look at totalFails, so it could cheerfully say "ready for verification" while the
+  // Submit button turned around and blocked with "X remaining" for the CURRENT round. Now
+  // both agree.
+  const notDoneCount = procs.filter(p => !isProcDone(p)).length;
 
   const hdr = ROUND_LABELS.map(l=>`<th style="font-size:11px;padding:4px 6px;">${l}</th>`).join("");
 
@@ -3038,7 +3043,9 @@ function rReview() {
   return `
     <div class="header"><h1>Review — All Readings</h1>
       <p>${PRODUCTS[S.product].label} · ${S.operator} · ${S.date}${S.batchNo?` · Batch ${S.batchNo}`:""}</p></div>
-    ${totalFails>0
+    ${notDoneCount>0
+      ? `<div class="alert">⏳ ${notDoneCount} process(es) still need to be completed before you can submit.</div>`
+      : totalFails>0
       ? `<div class="alert">⚠  ${totalFails} check(s) FAILED across all readings.</div>`
       : `<div class="alert green">✅ All readings complete. Ready for verification.</div>`}
     <div class="card" style="overflow-x:auto;">
@@ -4284,26 +4291,42 @@ function rVrDetail() {
   const rows = procs.map((proc, procIdx) => {
     const isNew = procIdx > prevThruIdx;
 
-    let detailHtml;
+    let detailHtml, hasData;
     if (proc.type === "braiding") {
       const n = product.braiding.machines;
       const vals = Array.from({length:n}, (_,i) => row[`BR-${String(i+1).padStart(2,"0")} O.D.`]).filter(Boolean);
-      if (!vals.length) return "";
-      const anyFail  = vals.some(v => /FAIL|✗/.test(v));
-      const allNoRun = vals.every(v => v === "No Run");
-      const cls = allNoRun ? "b-na" : anyFail ? "b-ng" : "b-ok";
-      const lbl = allNoRun ? "No Run" : anyFail ? "NG" : "OK";
-      detailHtml = `<div class="ver-row" style="${isNew?"":"opacity:.55;"}">
-        <div class="ver-info">
-          <div class="sum-char">Wire Braiding</div>
-          <div class="sum-obs">${esc(vals.join(", "))}</div>
-        </div>
-        <span class="badge ${cls}">${lbl}</span>
-      </div>`;
+      hasData = vals.length > 0;
+      if (!hasData) {
+        detailHtml = `<div class="ver-row" style="opacity:.55;">
+          <div class="ver-info"><div class="sum-char">Wire Braiding</div></div>
+          <span class="badge" style="background:#f1f5f9;color:#94a3b8;">—</span>
+        </div>`;
+      } else {
+        const anyFail  = vals.some(v => /FAIL|✗/.test(v));
+        const allNoRun = vals.every(v => v === "No Run");
+        const cls = allNoRun ? "b-na" : anyFail ? "b-ng" : "b-ok";
+        const lbl = allNoRun ? "No Run" : anyFail ? "NG" : "OK";
+        detailHtml = `<div class="ver-row" style="${isNew?"":"opacity:.55;"}">
+          <div class="ver-info">
+            <div class="sum-char">Wire Braiding</div>
+            <div class="sum-obs">${esc(vals.join(", "))}</div>
+          </div>
+          <span class="badge ${cls}">${lbl}</span>
+        </div>`;
+      }
     } else {
-      detailHtml = proc.checks.map(c => {
+      // Only checks this sheet schema actually tracks (vrSheetValue returns non-null for
+      // those) are worth showing at all. Separately — and this is the actual fix — a check
+      // being TRACKED but blank (val === "") used to still count as "this process has
+      // something to review", which let fully-untouched downstream processes (e.g. 100/120/
+      // 130 on a batch only filled through 090) show up as "🆕 New" with live Approve/Not
+      // Approve buttons. hasData now requires an actual non-empty value, matching the same
+      // rule highestFilledProcess() already uses to decide what's really been "reached".
+      const tracked = proc.checks.filter(c => vrSheetValue(row, proc.no, c.key) !== null);
+      if (!tracked.length) return "";
+      hasData = tracked.some(c => { const v = vrSheetValue(row, proc.no, c.key); return v !== null && v !== ""; });
+      detailHtml = tracked.map(c => {
         const val = vrSheetValue(row, proc.no, c.key);
-        if (val === null) return "";
         const j = vrJudge(val);
         return `<div class="ver-row" style="${isNew?"":"opacity:.55;"}">
           <div class="ver-info">
@@ -4313,12 +4336,21 @@ function rVrDetail() {
           <span class="badge ${j.cls}">${j.lbl} · ${esc(val||"—")}</span>
         </div>`;
       }).join("");
-      if (!detailHtml) return "";
     }
 
     if (!isNew) {
       return `<div style="margin-bottom:10px;">
         <div class="sum-proc">Process ${proc.no} · ${esc(proc.machine)} <span class="badge b-na" style="opacity:.6;">✓ Already verified</span></div>
+        ${detailHtml}
+      </div>`;
+    }
+
+    if (!hasData) {
+      // Visible so the verifier can see what's still pending, but there's nothing to
+      // approve yet — doesn't get an Approve/Not Approve control and doesn't block
+      // verifying whatever IS actually filled in (see canVerify below).
+      return `<div style="margin-bottom:10px;opacity:.6;">
+        <div class="sum-proc">Process ${proc.no} · ${esc(proc.machine)} <span class="badge" style="background:#f1f5f9;color:#94a3b8;">Not yet done</span></div>
         ${detailHtml}
       </div>`;
     }
