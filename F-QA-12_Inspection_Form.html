@@ -2017,7 +2017,11 @@ function sheetRoundSummary(rowsForRound) {
     complete: !!last["Finalised At"],
     lastDate: last.Date || "",
     rowNum:   last.__row,
-    verifiedThru: last["Verified Thru Process"] || null
+    verifiedThru: last["Verified Thru Process"] || null,
+    // Did this round's most recent row use "No Run" anywhere? Drives the new-shift gate in
+    // findBlockingRound()/roundBlocksNextShift() below — a shift with unverified No-Run
+    // entries has to get signed off before another shift on this batch can be started.
+    hasNoRun: Object.values(last).some(v => v === "No Run")
   };
 }
 
@@ -2079,6 +2083,7 @@ function mergedBatchRegistry() {
         rowNum:       (sSummary && sSummary.rowNum) || (lr && lr.rowNum) || null,
         complete:     sSummary ? sSummary.complete : !!(lr && lr.complete),
         verifiedThru: (sSummary && sSummary.verifiedThru) || null,
+        hasNoRun:     !!(sSummary && sSummary.hasNoRun),
         knownLocally: !!lr,
         sheetRows:    sRows || null
       };
@@ -2094,6 +2099,34 @@ function mergedBatchRegistry() {
     };
   });
   return merged;
+}
+
+// A round "blocks" starting another shift on this same batch when its most recent row used
+// "No Run" somewhere AND it hasn't been verified all the way through everything it actually
+// filled in (verifiedThru reaching highestFilledProcess() is the same bar isProcDone()/the
+// Verify Reports screen already use elsewhere for "fully caught up"). A round with no data,
+// or one that never used No Run, or one already fully verified, never blocks.
+function roundBlocksNextShift(entry, roundIdx) {
+  const r = entry && entry.rounds && entry.rounds[roundIdx];
+  if (!r || !r.hasNoRun) return false;
+  if (!r.sheetRows || !r.sheetRows.length) return false;
+  const last = r.sheetRows[r.sheetRows.length - 1];
+  const highest = highestFilledProcess(last, entry.product);
+  return r.verifiedThru !== highest;
+}
+
+// Scans every round already touched on this batch and returns the first one that's blocking
+// (see roundBlocksNextShift() above), or null if none are. Used to lock the Setup screen's
+// shift buttons for any round NOT yet started on this batch, and re-checked authoritatively
+// in continueBatch(). Round 0 (Approval Sample) can never appear here — it's never offered
+// No Run in the first place (see canNoRun/approvalClearedThruProcess()).
+function findBlockingRound(entry) {
+  if (!entry || !entry.rounds) return null;
+  for (const riStr of Object.keys(entry.rounds)) {
+    const ri = Number(riStr);
+    if (roundBlocksNextShift(entry, ri)) return { idx: ri, label: ROUND_LABELS[ri] };
+  }
+  return null;
 }
 
 // A round this device has never touched has no local resume point — this rebuilds
@@ -2222,6 +2255,23 @@ function approvalSampleVerifiedThru() {
   return (info && info.rounds && info.rounds[0] && info.rounds[0].verifiedThru) || null;
 }
 
+// True once Approval Sample's OWN verification has reached at least this process, for a
+// non-Approval-Sample shift on the ACTIVE batch. This is what lets a later shift mark a
+// batch-level test (Hardness, Tensile, etc.) "No Run" on day 1 itself instead of having to
+// wait for a whole extra day — once a verifier has signed off on Approval Sample's reading
+// for this exact process, re-running the same test on every other shift that day is
+// redundant, not a safety gap. Approval Sample (round 0) always returns false here — it's
+// the reference sample and must always actually run every check itself.
+function approvalClearedThruProcess(procNo) {
+  if (S.currentRound === 0) return false;
+  const capNo = approvalSampleVerifiedThru();
+  if (!capNo) return false;
+  const procs  = buildProcesses(S.product);
+  const capIdx = procs.findIndex(p => p.no === capNo);
+  const thisIdx = procs.findIndex(p => p.no === procNo);
+  return capIdx >= 0 && thisIdx >= 0 && thisIdx <= capIdx;
+}
+
 // Per-shift status chips for one batch card — same "V-<procNo>" / "not verified yet"
 // wording the old dropdown's option text used, just rendered as badges instead of packed
 // into one run-on string. A round absent from `rounds` (never touched) gets no chip at
@@ -2337,16 +2387,36 @@ function rSetup() {
       ${batchPreview ? `<div style="font-size:12px;color:#64748b;margin-top:6px;">Batch No. (auto): <strong>${batchPreview}</strong></div>` : ""}
       <label>Shift</label>
       <div class="shift-row">
-        ${ROUND_LABELS.map((sh,shi) => {
-          const isLocked = shiftLocked && shi !== 0;
-          const cls = `shift-btn ${S.shift===sh?"on":""} ${isLocked?"locked":""}`;
-          const click = isLocked
-            ? `alert('Approval Sample must be verified (at least partially) for this batch before other shifts can be selected.')`
-            : `S.shift='${sh}';S.currentRound=${shi};render()`;
-          return `<div class="${cls}" onclick="${click}">${sh}</div>`;
-        }).join("")}
+        ${(() => {
+          // A brand-new (never-touched) shift on THIS batch is locked if some other round on
+          // this batch used "No Run" and hasn't been fully verified yet — see
+          // findBlockingRound(). Already-started rounds (including the blocking one itself)
+          // stay open, since resuming your own in-progress work is never "starting another
+          // shift". Separate from, and stacks with, the Approval-Sample gate above.
+          const batchEntry = batchPreview ? registry[batchPreview] : null;
+          const blocking = batchEntry ? findBlockingRound(batchEntry) : null;
+          return ROUND_LABELS.map((sh,shi) => {
+            const approvalLocked = shiftLocked && shi !== 0;
+            const roundTouched = !!(batchEntry && batchEntry.rounds && batchEntry.rounds[shi]);
+            const noRunLocked = !approvalLocked && !roundTouched && !!blocking && blocking.idx !== shi;
+            const isLocked = approvalLocked || noRunLocked;
+            const cls = `shift-btn ${S.shift===sh?"on":""} ${isLocked?"locked":""}`;
+            const click = isLocked
+              ? (approvalLocked
+                  ? `alert('Approval Sample must be verified (at least partially) for this batch before other shifts can be selected.')`
+                  : `alert('${esc(blocking.label)} used "No Run" on this batch and hasn\\'t been fully verified yet. Get it verified in Verify Reports before starting a new shift.')`)
+              : `S.shift='${sh}';S.currentRound=${shi};render()`;
+            return `<div class="${cls}" onclick="${click}">${sh}</div>`;
+          }).join("");
+        })()}
       </div>
       ${shiftLocked ? `<div style="font-size:12px;color:#c2410c;margin-top:6px;">🔒 Approval Sample must be verified by Verify Reports (at least partially) before other shifts unlock.</div>` : ""}
+      ${(() => {
+        if (shiftLocked) return "";
+        const batchEntry = batchPreview ? registry[batchPreview] : null;
+        const blocking = batchEntry ? findBlockingRound(batchEntry) : null;
+        return blocking ? `<div style="font-size:12px;color:#c2410c;margin-top:6px;">🔒 ${esc(blocking.label)} used "No Run" and isn't fully verified yet — new shifts on this batch are locked until it is.</div>` : "";
+      })()}
       <label>Prepared By (Device ID)</label>
       <select id="s-op" onchange="S.operator=this.value;render()"><option value="">— Select —</option>${duOpts}</select>
       <label>PIN</label>
@@ -2496,6 +2566,16 @@ function continueBatch() {
     return;
   }
 
+  // Defense in depth for the Setup screen's shift-button lock above (findBlockingRound()) —
+  // re-checked authoritatively here regardless of UI state. Only blocks starting a round
+  // that's NEVER been touched on this batch; resuming an already-started round (even the
+  // blocking one itself) is always allowed.
+  const blocking = findBlockingRound(info);
+  if (!roundInfo && blocking && blocking.idx !== roundIdx) {
+    alert(`${blocking.label} used "No Run" on this batch and hasn't been fully verified yet. Please get it verified in Verify Reports before starting a new shift.`);
+    return;
+  }
+
   const todayStr = today();
 
   // A round finalised on an EARLIER day isn't locked forever — see sheetRoundSummary(),
@@ -2572,7 +2652,10 @@ function rProcess() {
 
   const body = proc.type === "braiding" ? rBraiding(proc) : rChecks(proc);
 
-  const canNoRun = S.batchDay > 1 && hasOp && !done;
+  // No Run unlocks two ways: continuing an existing batch on a later day (the original
+  // rule), or — new — a non-Approval-Sample shift on day 1 itself once Approval Sample has
+  // already been verified through this exact process today. See approvalClearedThruProcess().
+  const canNoRun = (S.batchDay > 1 || approvalClearedThruProcess(proc.no)) && hasOp && !done;
 
   // Non-Approval-Sample shifts are capped at wherever Approval Sample's verification
   // currently stands — surface that here so it's not a surprise when "Next" gets blocked.
@@ -2692,10 +2775,10 @@ function rChecks(proc) {
         </div>`;
 
     } else if (c.type === "bands") {
-      // No Run is only offered when continuing an existing batch on a later day — same
-      // rule as the process-level "Mark whole process No Run" button — so a brand-new
-      // day-1 batch can't skip a reading that was never actually taken.
-      const canNoRunCheck = S.batchDay > 1;
+      // Same rule as the process-level "Mark whole process No Run" button — see
+      // approvalClearedThruProcess() — so a brand-new day-1 batch can't skip a reading that
+      // was never actually taken, unless Approval Sample already verified it today.
+      const canNoRunCheck = S.batchDay > 1 || approvalClearedThruProcess(proc.no);
       const noRunSel = e?.result === "NO_RUN";
       body = `
         <div class="bands-label">Select the measured value:</div>
