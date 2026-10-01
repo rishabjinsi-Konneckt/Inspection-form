@@ -1683,7 +1683,10 @@ function rPhotoBadge(entry, inputId) {
   else if (status === "error") badge = `<span class="photo-badge photo-error">&#9888; Upload failed &middot; tap to retry</span>`;
   else if (entry?.photo) badge = `<span class="photo-badge photo-done">&#128247; Photo attached &#10003;</span>`;
   else badge = `<span class="photo-badge photo-empty">&#128247; Add photo (optional)</span>`;
-  return `<div class="photo-row" onclick="document.getElementById('${inputId}').click()">${badge}</div>`;
+  // Force an explicit, local-only save the instant this is tapped — belt-and-suspenders
+  // against the camera handoff backgrounding (or the OS killing) this tab before the next
+  // normal render()/saveState() would otherwise fire. No network call, no added delay.
+  return `<div class="photo-row" onclick="saveState();document.getElementById('${inputId}').click()">${badge}</div>`;
 }
 
 // The single source of truth for a blank session. Used for the initial state, by
@@ -1730,6 +1733,14 @@ const EPHEMERAL_KEYS = [
 // autosave failure is the worst possible failure mode for this form.
 let saveFailed = false;
 
+// Set when loadState() finds data under STORAGE_KEY but can't actually read it (corrupt or
+// truncated JSON — plausible if the device/browser process was killed mid-write). This is
+// NOT the same as "nothing was ever saved": that case is normal and silent (a brand-new
+// device, or one that's never had an inspection in progress). This case means real progress
+// may have existed and is now unreadable, so boot() surfaces it explicitly instead of
+// silently landing on a blank Setup screen as if nothing had happened.
+let stateLoadCorrupted = false;
+
 function saveState() {
   S.savedAt = new Date().toISOString();
   const payload = {};
@@ -1744,14 +1755,21 @@ function saveState() {
   }
 }
 function loadState() {
+  let raw;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
+    raw = localStorage.getItem(STORAGE_KEY);
+  } catch (e) { return null; } // storage itself inaccessible — nothing more to do here
+  if (!raw) return null;
+  try {
     const saved = JSON.parse(raw);
-    if (!saved || typeof saved !== "object") return null;
+    if (!saved || typeof saved !== "object") throw new Error("not an object");
     // Merge onto a fresh state so a slimmed or older payload still yields a complete S.
     return Object.assign(freshState(), saved);
-  } catch (e) { return null; }
+  } catch (e) {
+    stateLoadCorrupted = true;
+    console.error("Saved inspection data was found but could not be read:", e, raw);
+    return null;
+  }
 }
 function clearState() {
   try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
@@ -2135,8 +2153,11 @@ function findBlockingRound(entry) {
 // mapping the Verify Reports read-through view uses) directly into curEntries()/
 // curBraiding(), tagged {fromSheet:true} for traceability. Checks the Sheet schema never
 // tracks in the first place (most non-headline fields) stay blank regardless of device —
-// that data was simply never sent. Rows are merged oldest → newest so a later day's value
-// wins if a field were ever duplicated across days.
+// that data was simply never sent.
+//
+// Callers must pass only TODAY's row(s) for this round — never an earlier day's — so a
+// finished prior-day pass can never silently stand in for checks today's own pass hasn't
+// reached yet. See the filtering in continueBatch() where this is called from.
 function hydrateRoundFromSheetRows(roundIdx, rows, productKey) {
   const rd = S.roundData[roundIdx];
   const product = PRODUCTS[productKey];
@@ -2630,13 +2651,22 @@ function continueBatch() {
     // This device has never worked on this round — there's no local resume point, but the
     // Sheet already has whatever was captured for it from wherever it WAS worked on. Rebuild
     // that into this round's entries and resume right after the last process it covers.
-    hydrateRoundFromSheetRows(roundIdx, roundInfo.sheetRows, info.product);
+    //
+    // Only TODAY's row(s) for this round go into hydration — not every historical day's row.
+    // roundInfo.sheetRows spans every day this round was ever worked; reaching back into an
+    // earlier, already-finished day's row here silently carried that day's actual readings
+    // (e.g. a completed braiding pass) into today's fresh pass for any check today's own row
+    // hasn't reached yet — making unfinished work look already done, with nothing matching
+    // in the Sheet to back it up. A round that's genuinely fresh today (no today's row yet)
+    // hydrates nothing and starts blank, same as any other new day.
+    const todaysSheetRows = roundInfo.sheetRows.filter(r => r.Date === todayStr);
+    if (todaysSheetRows.length) hydrateRoundFromSheetRows(roundIdx, todaysSheetRows, info.product);
     const procs = buildProcesses(info.product);
     let resumeIdx = procs.findIndex(p => !isProcDone(p));
     if (resumeIdx < 0) resumeIdx = procs.length - 1;
     S.processIdx = resumeIdx;
     S.reportedThroughIdx = resumeIdx;
-    const todaysRow = roundInfo.sheetRows.find(r => r.Date === todayStr);
+    const todaysRow = todaysSheetRows[todaysSheetRows.length - 1] || null;
     S.dayRowNum = todaysRow ? todaysRow.__row : null;
   } else if (roundInfo) {
     const roundSameDay = roundInfo.lastDate === todayStr;
@@ -4640,6 +4670,20 @@ function boot() {
         <button class="btn-outline" onclick="discardSession()">Discard &amp; Start Fresh</button>
       </div>
       <div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:4px;">F-QA-12 Rev.01 \u00b7 Eff. 01.04.19</div>`;
+  } else if (stateLoadCorrupted) {
+    // This device had SOMETHING saved but it couldn't be read back \u2014 don't silently land on
+    // a blank Setup screen as if nothing had happened (see loadState()). The Sheet itself is
+    // very likely still fine: anything saved up through the last Pause/Review on this batch
+    // already made it there independent of this device's local copy \u2014 "Continue Existing
+    // Batch" on the next screen reads from the Sheet, not from what just failed to load here.
+    render();
+    document.getElementById("app").innerHTML = `
+      <div class="alert" style="background:#fef2f2;color:#991b1b;border-color:#dc2626;">
+        \u26a0 <strong>This device had saved progress that couldn't be read</strong> (it may have
+        been interrupted while saving). Nothing on the Sheet is affected \u2014 if you were
+        continuing a batch, use "\u21bb Continue Existing Batch" below to pick up from wherever it
+        was last saved there.
+      </div>` + document.getElementById("app").innerHTML;
   } else {
     render();
   }
