@@ -153,6 +153,7 @@ select:focus, input[type="date"]:focus { border-color: #2563eb; }
 .b-ok   { background: #dcfce7; color: #16a34a; }
 .b-ng   { background: #fee2e2; color: #dc2626; }
 .b-na   { background: #f1f5f9; color: #64748b; }
+.b-stale { background: #fef3c7; color: #92400e; }
 
 .sum-row  { display: flex; justify-content: space-between; align-items: flex-start; padding: 11px 0; border-bottom: 1px solid #f8fafc; gap: 10px; }
 .sum-proc { font-size: 11px; color: #94a3b8; font-weight: 600; text-transform: uppercase; }
@@ -2276,14 +2277,28 @@ function approvalClearedThruProcess(procNo) {
 // wording the old dropdown's option text used, just rendered as badges instead of packed
 // into one run-on string. A round absent from `rounds` (never touched) gets no chip at
 // all, matching the old behavior exactly.
+//
+// A round's "last" row can be from an EARLIER day it was finalised on (see
+// sheetRoundSummary()/roundInfo.lastDate) if it hasn't been started again today — e.g. a
+// batch moved to Day 2 but only some shifts have a Day-2 row so far. Showing that old row's
+// verified status with no indication of its age made an untouched-today shift look done
+// today. These get the amber "stale" treatment instead, with the actual date shown, so
+// "already handled" and "that's leftover from yesterday" are never visually the same thing.
 function batchStatusBadges(info) {
   const rounds = info.rounds || {};
+  const todayStr = today();
   return ROUND_LABELS.map((lbl, i) => {
     const r = rounds[i];
     if (!r) return "";
-    return r.verifiedThru
-      ? `<span class="badge b-ok">${esc(lbl)}: V-${esc(r.verifiedThru)}</span>`
-      : `<span class="badge b-na">${esc(lbl)}: not verified</span>`;
+    const isToday = r.lastDate === todayStr;
+    if (r.verifiedThru) {
+      return isToday
+        ? `<span class="badge b-ok">${esc(lbl)}: V-${esc(r.verifiedThru)}</span>`
+        : `<span class="badge b-stale" title="Last activity was ${esc(ddmmyyyy(r.lastDate))} — not started today">${esc(lbl)}: V-${esc(r.verifiedThru)} (${esc(ddmmyyyy(r.lastDate))})</span>`;
+    }
+    return isToday
+      ? `<span class="badge b-na">${esc(lbl)}: not verified</span>`
+      : `<span class="badge b-stale" title="Last activity was ${esc(ddmmyyyy(r.lastDate))} — not started today">${esc(lbl)}: not started today</span>`;
   }).join("");
 }
 
