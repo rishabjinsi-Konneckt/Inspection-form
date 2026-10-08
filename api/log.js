@@ -1,4 +1,4 @@
-const { getAccessToken, setCors } = require('./_google');
+const { getAccessToken, setCors, isAuthorized } = require('./_google');
 
 module.exports = async function handler(req, res) {
   setCors(res);
@@ -11,6 +11,8 @@ module.exports = async function handler(req, res) {
   if (req.method !== 'GET') { res.status(405).json({ error: 'Method not allowed' }); return; }
 
   try {
+    if (!isAuthorized(req)) { res.status(401).json({ error: 'Unauthorized' }); return; }
+
     const sheetId = process.env.GOOGLE_SHEET_ID;
     if (!sheetId) throw new Error('Missing GOOGLE_SHEET_ID env var');
 
