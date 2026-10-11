@@ -3696,6 +3696,30 @@ async function locateRow(rowNum, expectBatchNo, expectShift, expectDate) {
   }
 }
 
+// Duplicate-row guard. When this session has no remembered row for the shift (new tab, lost
+// local data, other phone, Setup used instead of Continue), look the Sheet up BEFORE
+// appending: if a row for this exact Batch No. + Shift + Date already exists, reuse it
+// instead of creating a second one. Cells this session left blank keep what the existing
+// row already had, so a fresher-but-emptier session can never wipe filled data.
+async function findExistingRow(batchNo, shift, date) {
+  try {
+    const res = await fetch(`/api/log?date=${encodeURIComponent(date || "")}`, { cache: "no-store" });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const rows = (data && data.rows) || [];
+    const hits = rows.filter(r => (r["Batch No."] || "") === batchNo && (r["Shift / Sample"] || "") === shift);
+    return hits.length ? hits[hits.length - 1] : null;
+  } catch (e) { return null; }
+}
+function mergeKeepingExisting(row, existing) {
+  return row.map((v, i) => {
+    const blank = (v === "" || v === null || v === undefined);
+    if (!blank) return v;
+    const old = existing[SHEET_HEADERS[i]];
+    return (old === undefined || old === null) ? v : old;
+  });
+}
+
 // The Sheet's row 1 must actually contain "Last Saved At" at LAST_SAVED_COL for
 // /api/log's name-keyed row-object mapping to expose that column at all — an unlabeled
 // column would read back keyed under "" instead. This codebase's convention for schema
@@ -3748,9 +3772,14 @@ function silentCheckpoint() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body)
       });
+      let rowOut = row;
+      if (!rowNum) {
+        const ex = await findExistingRow(batchNo, ROUND_LABELS[roundIdx], date);
+        if (ex && ex.__row) { rowNum = ex.__row; S.dayRowNum = rowNum; rowOut = mergeKeepingExisting(row, ex); }
+      }
       let res;
       if (rowNum) {
-        res = await post({ mode: "update", range: `A${rowNum}:${colLetter(SHEET_DATA_COLS)}${rowNum}`, rows: [row] });
+        res = await post({ mode: "update", range: `A${rowNum}:${colLetter(SHEET_DATA_COLS)}${rowNum}`, rows: [rowOut] });
       } else {
         res = await post({ rows: [row] });
       }
@@ -3781,7 +3810,9 @@ function silentCheckpoint() {
 // row (and remembers its row number); any LATER save on that SAME calendar date updates
 // that exact row in place instead of appending another one. A genuinely new calendar
 // date (continuing tomorrow, etc.) always appends a fresh row via continueBatch().
+let submitInFlight = false;
 async function submitToSheet(isRetry) {
+  if (!isRetry && (submitInFlight || S.submitStatus === "loading")) return; // double-tap guard
   if (!isRetry) { S.submitStatus = "loading"; S.submitError = ""; render(); }
   // If a silent checkpoint is mid-flight, let it finish first so it can't append a second
   // row for the same round/day (it records S.dayRowNum when it creates one).
@@ -3796,12 +3827,17 @@ async function submitToSheet(isRetry) {
       if (verified !== rowNum) { rowNum = verified; S.dayRowNum = rowNum; }
     }
     let data;
+    let rowOut = row;
+    if (!rowNum) {
+      const ex = await findExistingRow(S.batchNo, ROUND_LABELS[S.currentRound], S.date);
+      if (ex && ex.__row) { rowNum = ex.__row; S.dayRowNum = rowNum; rowOut = mergeKeepingExisting(row, ex); }
+    }
     if (rowNum) {
       const range = `A${rowNum}:${colLetter(SHEET_DATA_COLS)}${rowNum}`;
       const res = await fetch("/api/submit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "update", range, rows: [row] })
+        body: JSON.stringify({ mode: "update", range, rows: [rowOut] })
       });
       data = await res.json();
       if (!res.ok) {
