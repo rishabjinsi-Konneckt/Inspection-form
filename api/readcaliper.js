@@ -17,9 +17,12 @@ const { setCors } = require('./_google');
 const PROMPT =
   'This photo shows a digital caliper measuring a hose. Read the number shown on the ' +
   'caliper\'s LCD, in millimetres. If the digits are blurry, glared, cut off, covered, or the ' +
-  'display is not visible, do NOT guess: set readable to false and reading to null. Reply with ' +
+  'display is not visible, do NOT guess: set readable to false and reading to null. Also rate the ' +
+  'image_quality of the display digits: "sharp" = every digit crisp with clear edges; "soft" = ' +
+  'digits legible but edges fuzzy; "blurry" = digits smeared, doubled or ambiguous. Reply with ' +
   'ONLY a JSON object, no other text: ' +
-  '{"readable": true or false, "reading": number or null, "confidence": "high" or "medium" or "low"}';
+  '{"readable": true or false, "reading": number or null, "confidence": "high" or "medium" or "low", ' +
+  '"image_quality": "sharp" or "soft" or "blurry"}';
 
 async function withTimeout(ms, fn) {
   const controller = new AbortController();
@@ -106,7 +109,8 @@ module.exports = async function handler(req, res) {
     const parsed = JSON.parse(m[0]);
 
     const reading = (typeof parsed.reading === 'number' && isFinite(parsed.reading)) ? parsed.reading : null;
-    const readable = parsed.readable === true && reading !== null;
+    // Anything short of "sharp" is treated as unreadable so the app cautions "blurry - retake".
+    const readable = parsed.readable === true && reading !== null && parsed.image_quality === 'sharp';
     const confidence = ['high', 'medium', 'low'].includes(parsed.confidence) ? parsed.confidence : 'low';
     res.status(200).json({ readable, reading, confidence, engine: geminiKey ? 'gemini' : 'anthropic' });
   } catch (err) {

@@ -1593,6 +1593,8 @@ async function stampImage(file, label) {
   const ctx = canvas.getContext("2d");
   ctx.drawImage(src, 0, 0, w, h);
   if (src.close) src.close();   // free the native bitmap immediately
+  // Measured on the clean photo (before the text stamp is drawn on it), see measureSharpness().
+  const sharpness = measureSharpness(canvas);
 
   const stamp = new Date().toLocaleString("en-IN", {
     day:"2-digit", month:"short", year:"numeric",
@@ -1625,7 +1627,44 @@ async function stampImage(file, label) {
     canvas.toBlob(b => b ? resolve(b) : reject(new Error("Could not encode photo")), "image/jpeg", 0.85);
   });
   canvas.width = canvas.height = 0;   // release the backing store on memory-tight phones
+  blob.sharpness = sharpness;         // read by the photo handlers; not part of the uploaded file
   return blob;
+}
+
+// On-phone blur check, free and independent of any AI service: variance of the Laplacian
+// (edge strength) of the photo shrunk to 640px. Sharp photos score high, blurred ones low —
+// e.g. a sharp test photo scored ~263 and the same photo blurred progressively scored
+// 148 / 75 / 31. Anything under BLUR_MIN_SHARPNESS is treated as too blurry. The AI's own
+// "image quality" rating is not relied on for this, since models tend to read blurry digits
+// anyway. The cutoff is a starting value: the score is shown next to each photo for now so it
+// can be tuned against real shop-floor photos. Returns null if it can't be measured.
+const BLUR_MIN_SHARPNESS = 90;
+function measureSharpness(srcCanvas) {
+  try {
+    const sw = srcCanvas.width, sh = srcCanvas.height;
+    if (!sw || !sh) return null;
+    const scale = Math.min(1, 640 / Math.max(sw, sh));
+    const w = Math.max(8, Math.round(sw * scale)), h = Math.max(8, Math.round(sh * scale));
+    const c = document.createElement("canvas");
+    c.width = w; c.height = h;
+    const cx = c.getContext("2d");
+    cx.drawImage(srcCanvas, 0, 0, w, h);
+    const px = cx.getImageData(0, 0, w, h).data;
+    const g = new Float32Array(w * h);
+    for (let i = 0, j = 0; i < px.length; i += 4, j++) g[j] = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+    let sum = 0, sumSq = 0, n = 0;
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const i = y * w + x;
+        const lap = g[i - 1] + g[i + 1] + g[i - w] + g[i + w] - 4 * g[i];
+        sum += lap; sumSq += lap * lap; n++;
+      }
+    }
+    c.width = c.height = 0;
+    if (!n) return null;
+    const mean = sum / n;
+    return Math.round((sumSq / n - mean * mean) * 10) / 10;
+  } catch (e) { return null; }
 }
 
 async function uploadToCloudinary(blob, context) {
@@ -1665,6 +1704,7 @@ async function handlePhotoSelect(key, inputEl) {
     const e1 = curEntries()[key] || {};
     e1.photo = url;
     e1.photoStatus = "done";
+    e1.sharpness = blob.sharpness;
     curEntries()[key] = e1;
     uploaded = true;
   } catch (err) {
@@ -1699,6 +1739,7 @@ async function handleBraidPhotoSelect(m, inputEl) {
     const b1 = curBraiding()[m] || {};
     b1.photo = url;
     b1.photoStatus = "done";
+    b1.sharpness = blob.sharpness;
     curBraiding()[m] = b1;
     uploaded = true;
   } catch (err) {
@@ -1740,8 +1781,13 @@ function parseSelectedRange(label) {
 }
 
 function photoReadNote(e) {
-  const r = e && e.photoRead;
-  if (!e || !e.photo || !r || r.pending || e.result === "NO_RUN") return "";
+  if (!e || !e.photo || e.result === "NO_RUN") return "";
+  // On-phone blur check first: works with no AI service and offline.
+  if (typeof e.sharpness === "number" && e.sharpness < BLUR_MIN_SHARPNESS) {
+    return "⚠ Photo is blurry or unclear — retake";
+  }
+  const r = e.photoRead;
+  if (!r || r.pending) return "";
   if (!r.readable || r.confidence === "low") return "⚠ Photo is blurry or unclear — retake";
   const range = parseSelectedRange(e.label);
   if (!range) return "";
@@ -1750,9 +1796,10 @@ function photoReadNote(e) {
   return `⚠ Photo reads ${r.reading.toFixed(2)}, you selected ${e.label} — retake or correct`;
 }
 function photoNoteHtml(e) {
-  if (e && e.photoRead && e.photoRead.pending) return `<div class="photo-note">&#128269; Checking photo&hellip;</div>`;
   const note = photoReadNote(e);
-  return note ? `<div class="photo-note photo-note-warn">${esc(note)}</div>` : "";
+  if (note) return `<div class="photo-note photo-note-warn">${esc(note)}</div>`;
+  if (e && e.photoRead && e.photoRead.pending) return `<div class="photo-note">&#128269; Checking photo&hellip;</div>`;
+  return "";
 }
 
 async function checkPhotoReading(kind, key) {
@@ -1796,7 +1843,7 @@ function rPhotoBadge(entry, inputId) {
   let badge;
   if (status === "uploading") badge = `<span class="photo-badge photo-uploading">&#8987; Uploading&hellip;</span>`;
   else if (status === "error") badge = `<span class="photo-badge photo-error">&#9888; Upload failed &middot; tap to retry</span>`;
-  else if (entry?.photo) badge = `<span class="photo-badge photo-done">&#128247; Photo attached &#10003; &middot; tap to retake</span>`;
+  else if (entry?.photo) badge = `<span class="photo-badge photo-done">&#128247; Photo attached &#10003;${typeof entry.sharpness === "number" ? ` &middot; sharpness ${Math.round(entry.sharpness)}` : ""} &middot; tap to retake</span>`;
   else if (entry?.fromSheet) return "";   // pulled back from the Sheet — photo already on file there
   else badge = `<span class="photo-badge photo-error">&#128247; Photo required &middot; tap to open camera</span>`;
   // Force an explicit, local-only save the instant this is tapped — belt-and-suspenders
