@@ -2974,11 +2974,12 @@ function recordSub(key, range) {
   const existing = curEntries()[key] || {};
   curEntries()[key] = { ...existing, result:"PASS", label:range, time: nowTime() }; render();
 }
-// Optional, per-device (Setup screen toggle, off by default): tapping a size/band that has a
-// photo slot opens the camera straight away, instead of needing a second tap on "Add photo".
+// Per-device (Setup screen toggle, ON by default): tapping a size/band that has a photo slot
+// opens the camera straight away, instead of needing a second tap on "Add photo". Only an
+// explicit "0" (someone unticked it on this device) turns it off.
 const CAMERA_ON_SELECT_KEY = "fqa12_camera_on_select_v1";
 function cameraOnSelectEnabled() {
-  try { return localStorage.getItem(CAMERA_ON_SELECT_KEY) === "1"; } catch (e) { return false; }
+  try { return localStorage.getItem(CAMERA_ON_SELECT_KEY) !== "0"; } catch (e) { return true; }
 }
 function setCameraOnSelect(on) {
   try { localStorage.setItem(CAMERA_ON_SELECT_KEY, on ? "1" : "0"); } catch (e) {}
