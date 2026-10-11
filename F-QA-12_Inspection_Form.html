@@ -1648,6 +1648,7 @@ async function handlePhotoSelect(key, inputEl) {
     curEntries()[key] = e1;
   }
   render();
+  silentCheckpoint(); // push the finished photo URL to the Sheet too (background, not awaited)
 }
 
 async function handleBraidPhotoSelect(m, inputEl) {
@@ -1674,6 +1675,7 @@ async function handleBraidPhotoSelect(m, inputEl) {
     curBraiding()[m] = b1;
   }
   render();
+  silentCheckpoint();
 }
 
 function rPhotoBadge(entry, inputId) {
@@ -1686,7 +1688,9 @@ function rPhotoBadge(entry, inputId) {
   // Force an explicit, local-only save the instant this is tapped — belt-and-suspenders
   // against the camera handoff backgrounding (or the OS killing) this tab before the next
   // normal render()/saveState() would otherwise fire. No network call, no added delay.
-  return `<div class="photo-row" onclick="saveState();document.getElementById('${inputId}').click()">${badge}</div>`;
+  // silentCheckpoint() also puts a copy on the Sheet in the background (not awaited — the
+  // camera still opens instantly), see its comment.
+  return `<div class="photo-row" onclick="saveState();silentCheckpoint();document.getElementById('${inputId}').click()">${badge}</div>`;
 }
 
 // The single source of truth for a blank session. Used for the initial state, by
@@ -1811,6 +1815,11 @@ function isCheckDone(chk, key) {
   const e = curEntries()[key];
   if (!e) return false;
   if (e.result === "NO_RUN") return true;
+  // An entry can exist with NO result yet: handlePhotoSelect() creates one (photoStatus
+  // only) when a photo is attached before the reading is chosen. That must not count as
+  // done — it used to fall through to `return true` below, which marked the check complete
+  // with a blank value (rendering "undefined / undefined") and let Next proceed unfilled.
+  if (!e.result) return false;
   if (chk.type === "pf_sub") return !!e.label;
   if (chk.type === "manual") return !!e.label;
   if (chk.type === "pf_manual") return e.result==="FAIL" || !!e.label;
@@ -2453,6 +2462,11 @@ function rSetup() {
         const blocking = batchEntry ? findBlockingRound(batchEntry) : null;
         return blocking ? `<div style="font-size:12px;color:#c2410c;margin-top:6px;">🔒 ${esc(blocking.label)} used "No Run" and isn't fully verified yet — new shifts on this batch are locked until it is.</div>` : "";
       })()}
+      <label style="display:flex;align-items:center;gap:8px;margin-top:14px;font-weight:600;font-size:13px;color:#475569;cursor:pointer;">
+        <input type="checkbox" style="width:18px;height:18px;" ${cameraOnSelectEnabled()?"checked":""}
+          onchange="setCameraOnSelect(this.checked)">
+        📷 Open camera when a size is selected (this device)
+      </label>
       <label>Prepared By (Device ID)</label>
       <select id="s-op" onchange="S.operator=this.value;render()"><option value="">— Select —</option>${duOpts}</select>
       <label>PIN</label>
@@ -2960,6 +2974,17 @@ function recordSub(key, range) {
   const existing = curEntries()[key] || {};
   curEntries()[key] = { ...existing, result:"PASS", label:range, time: nowTime() }; render();
 }
+// Optional, per-device (Setup screen toggle, off by default): tapping a size/band that has a
+// photo slot opens the camera straight away, instead of needing a second tap on "Add photo".
+const CAMERA_ON_SELECT_KEY = "fqa12_camera_on_select_v1";
+function cameraOnSelectEnabled() {
+  try { return localStorage.getItem(CAMERA_ON_SELECT_KEY) === "1"; } catch (e) { return false; }
+}
+function setCameraOnSelect(on) {
+  try { localStorage.setItem(CAMERA_ON_SELECT_KEY, on ? "1" : "0"); } catch (e) {}
+  render();
+}
+
 function recordBand(key, result, label) {
   const existing = curEntries()[key] || {};
   curEntries()[key] = { ...existing, result, label, time: nowTime() };
@@ -2967,7 +2992,17 @@ function recordBand(key, result, label) {
     if (result === "NO_RUN") applyLengthNoRunCascade();
     else revertLengthNoRunCascade();
   }
-  render();
+  render();   // saves the chosen value locally BEFORE the camera can open
+  // Camera hand-off must happen synchronously inside this tap (browsers only allow it from a
+  // direct user gesture). Only when: the option is on, a real reading was picked (not No
+  // Run), this is the FIRST reading picked for this check (existing.result unset — so fixing
+  // a mis-tap, or re-selecting after cancelling the camera, never re-opens it; the "Add
+  // photo" button is still there for that), and it has no photo or upload in flight.
+  if (cameraOnSelectEnabled() && result !== "NO_RUN" && S.screen === "process"
+      && !existing.result && !existing.photo && existing.photoStatus !== "uploading") {
+    const inp = document.getElementById(`photo_${key}`.replace(/[^a-zA-Z0-9_]/g, "_"));
+    if (inp) { silentCheckpoint(); inp.click(); }
+  }
 }
 
 // If Part Off (090) Length is No Run, the hose was never cut this round, which means
@@ -3491,12 +3526,75 @@ async function ensureLastSavedHeader() {
   finally { lastSavedHeaderEnsured = true; }
 }
 
+// Silent, non-blocking checkpoint to the Sheet — fired when the camera is about to open (and
+// again once a photo finishes uploading). Mobile Chrome can kill this tab while the camera
+// app is in front; if the phone also wipes the tab's local storage, everything since the
+// last Pause is gone. This puts a copy on the Sheet first. It never waits (the caller does
+// not await it, so the camera opens instantly), never changes the screen, S.submitStatus or
+// any alert, and swallows its own failures — it's an extra safety net on top of the local
+// autosave, not a replacement for Pause/Review. Same upsert rules as submitToSheet(): the
+// first save of the day appends and remembers the row number, later ones update that row.
+let silentPushPromise = null;
+function silentCheckpoint() {
+  if (silentPushPromise) return silentPushPromise;      // one at a time
+  if (S.screen !== "process" || !S.batchBase) return null;
+  if (S.submitStatus === "loading") return null;        // a real submit is already running
+  let ok = false;
+  try { ok = hasNewProgressToReport() && !!buildSheetRow(); } catch (e) { ok = false; }
+  if (!ok) return null;
+  silentPushPromise = (async () => {
+    try {
+      const row = buildSheetRow();
+      if (!row) return;
+      const roundIdx = S.currentRound, batchNo = S.batchNo, date = S.date, base = S.batchBase;
+      let rowNum = S.dayRowNum || null;
+      if (rowNum) {
+        const verified = await locateRow(rowNum, batchNo, ROUND_LABELS[roundIdx], date);
+        if (verified !== rowNum) { rowNum = verified; S.dayRowNum = rowNum; }
+      }
+      const post = (body) => fetch("/api/submit", {
+        method: "POST", keepalive: true,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      let res;
+      if (rowNum) {
+        res = await post({ mode: "update", range: `A${rowNum}:${colLetter(SHEET_DATA_COLS)}${rowNum}`, rows: [row] });
+      } else {
+        res = await post({ rows: [row] });
+      }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error("silent checkpoint failed");
+      if (!rowNum) {
+        const m = (data.result && data.result.updatedRange || "").match(/![A-Z]+(\d+)/);
+        if (m) { rowNum = parseInt(m[1], 10); S.dayRowNum = rowNum; }
+      }
+      if (rowNum) {
+        registerBatchDay(base, {
+          product: S.product, batchLastDay: S.batchDay, batchLastDate: date,
+          roundIdx, roundRowNum: rowNum, roundLastDate: date
+        });
+        await post({ mode: "update", range: `${LAST_SAVED_COL}${rowNum}:${LAST_SAVED_COL}${rowNum}`, rows: [[new Date().toISOString()]] });
+        saveState();
+      }
+    } catch (e) {
+      console.warn("Silent checkpoint skipped:", e && e.message);
+    } finally {
+      silentPushPromise = null;
+    }
+  })();
+  return silentPushPromise;
+}
+
 // Same-day upsert: the FIRST save of a given calendar day for this round appends a fresh
 // row (and remembers its row number); any LATER save on that SAME calendar date updates
 // that exact row in place instead of appending another one. A genuinely new calendar
 // date (continuing tomorrow, etc.) always appends a fresh row via continueBatch().
 async function submitToSheet(isRetry) {
   if (!isRetry) { S.submitStatus = "loading"; S.submitError = ""; render(); }
+  // If a silent checkpoint is mid-flight, let it finish first so it can't append a second
+  // row for the same round/day (it records S.dayRowNum when it creates one).
+  if (silentPushPromise) { try { await silentPushPromise; } catch (e) {} }
   try {
     const row = buildSheetRow();
     if (!row) throw new Error("No data to submit for this round yet.");
