@@ -3,12 +3,78 @@ const { setCors } = require('./_google');
 // Reads the number off a digital caliper's LCD in an uploaded inspection photo, so the app can
 // caution the operator when the photo disagrees with the size they selected (or is too blurry
 // to read). Advisory only — the app never blocks on this, and treats any failure here as "no
-// opinion". Needs ANTHROPIC_API_KEY in the Vercel project's environment variables.
+// opinion".
+//
+// Which AI service answers is decided by which key is set in the Vercel project's environment
+// variables (checked in this order):
+//   GEMINI_API_KEY     -> Google Gemini (has a free tier). Model: GEMINI_MODEL, default gemini-3.8-flash
+//   ANTHROPIC_API_KEY  -> Anthropic Claude (paid).         Model: ANTHROPIC_MODEL, default claude-sonnet-5-5
+// With neither set, this returns 503 and the app simply shows no caution.
 //
 // Only photos hosted on Cloudinary are accepted, so this endpoint can't be used to make the
 // server fetch arbitrary URLs.
 
-const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-5-5';
+const PROMPT =
+  'This photo shows a digital caliper measuring a hose. Read the number shown on the ' +
+  'caliper\'s LCD, in millimetres. If the digits are blurry, glared, cut off, covered, or the ' +
+  'display is not visible, do NOT guess: set readable to false and reading to null. Reply with ' +
+  'ONLY a JSON object, no other text: ' +
+  '{"readable": true or false, "reading": number or null, "confidence": "high" or "medium" or "low"}';
+
+async function withTimeout(ms, fn) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try { return await fn(controller.signal); } finally { clearTimeout(timer); }
+}
+
+async function askGemini(apiKey, imageUrl) {
+  const model = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+  // Gemini takes the image bytes inline, so fetch them from Cloudinary first.
+  const imgRes = await withTimeout(15000, (signal) => fetch(imageUrl, { signal }));
+  if (!imgRes.ok) throw new Error('Could not fetch photo');
+  const mime = (imgRes.headers.get('content-type') || 'image/jpeg').split(';')[0];
+  const b64 = Buffer.from(await imgRes.arrayBuffer()).toString('base64');
+
+  const apiRes = await withTimeout(25000, (signal) => fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+    {
+      method: 'POST',
+      signal,
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
+      body: JSON.stringify({
+        contents: [{ parts: [
+          { inline_data: { mime_type: mime, data: b64 } },
+          { text: PROMPT }
+        ] }],
+        generationConfig: { temperature: 0, responseMimeType: 'application/json' }
+      })
+    }
+  ));
+  const data = await apiRes.json();
+  if (!apiRes.ok) throw new Error('Gemini request failed');
+  const parts = (((data.candidates || [])[0] || {}).content || {}).parts || [];
+  return parts.map(p => p.text || '').join('');
+}
+
+async function askAnthropic(apiKey, imageUrl) {
+  const model = process.env.ANTHROPIC_MODEL || 'claude-sonnet-5-5';
+  const apiRes = await withTimeout(25000, (signal) => fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    signal,
+    headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model,
+      max_tokens: 120,
+      messages: [{ role: 'user', content: [
+        { type: 'image', source: { type: 'url', url: imageUrl } },
+        { type: 'text', text: PROMPT }
+      ] }]
+    })
+  }));
+  const data = await apiRes.json();
+  if (!apiRes.ok) throw new Error('Anthropic request failed');
+  return ((data.content || []).find(b => b.type === 'text') || {}).text || '';
+}
 
 module.exports = async function handler(req, res) {
   setCors(res);
@@ -17,8 +83,9 @@ module.exports = async function handler(req, res) {
   if (req.method !== 'POST') { res.status(405).json({ error: 'Method not allowed' }); return; }
 
   try {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) { res.status(503).json({ error: 'Photo reading is not configured' }); return; }
+    const geminiKey = process.env.GEMINI_API_KEY;
+    const anthropicKey = process.env.ANTHROPIC_API_KEY;
+    if (!geminiKey && !anthropicKey) { res.status(503).json({ error: 'Photo reading is not configured' }); return; }
 
     const imageUrl = String((req.body && req.body.imageUrl) || '');
     if (!/^https:\/\/res\.cloudinary\.com\//.test(imageUrl)) {
@@ -26,50 +93,22 @@ module.exports = async function handler(req, res) {
       return;
     }
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 25000);
-    let apiRes, data;
+    let text;
     try {
-      apiRes = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        signal: controller.signal,
-        headers: {
-          'content-type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01'
-        },
-        body: JSON.stringify({
-          model: MODEL,
-          max_tokens: 120,
-          messages: [{
-            role: 'user',
-            content: [
-              { type: 'image', source: { type: 'url', url: imageUrl } },
-              { type: 'text', text:
-                'This photo shows a digital caliper measuring a hose. Read the number shown on ' +
-                'the caliper\'s LCD, in millimetres. If the digits are blurry, glared, cut off, ' +
-                'covered, or the display is not visible, do NOT guess: set readable to false and ' +
-                'reading to null. Reply with ONLY a JSON object, no other text: ' +
-                '{"readable": true or false, "reading": number or null, "confidence": "high" or "medium" or "low"}' }
-            ]
-          }]
-        })
-      });
-      data = await apiRes.json();
-    } finally {
-      clearTimeout(timer);
+      text = geminiKey ? await askGemini(geminiKey, imageUrl) : await askAnthropic(anthropicKey, imageUrl);
+    } catch (e) {
+      res.status(502).json({ error: e.message || 'Vision model request failed' });
+      return;
     }
-    if (!apiRes.ok) { res.status(502).json({ error: 'Vision model request failed' }); return; }
 
-    const text = ((data.content || []).find(b => b.type === 'text') || {}).text || '';
-    const m = text.match(/\{[\s\S]*\}/);
+    const m = String(text).match(/\{[\s\S]*\}/);
     if (!m) { res.status(502).json({ error: 'Unreadable model reply' }); return; }
     const parsed = JSON.parse(m[0]);
 
     const reading = (typeof parsed.reading === 'number' && isFinite(parsed.reading)) ? parsed.reading : null;
     const readable = parsed.readable === true && reading !== null;
     const confidence = ['high', 'medium', 'low'].includes(parsed.confidence) ? parsed.confidence : 'low';
-    res.status(200).json({ readable, reading, confidence });
+    res.status(200).json({ readable, reading, confidence, engine: geminiKey ? 'gemini' : 'anthropic' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
