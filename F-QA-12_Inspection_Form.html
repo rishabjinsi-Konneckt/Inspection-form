@@ -154,6 +154,9 @@ select:focus, input[type="date"]:focus { border-color: #2563eb; }
 .b-ng   { background: #fee2e2; color: #dc2626; }
 .b-na   { background: #f1f5f9; color: #64748b; }
 .b-stale { background: #fef3c7; color: #92400e; }
+.photo-note      { margin-top: 8px; font-size: 12px; color: #64748b; }
+.photo-note-warn { background: #fffbeb; border: 1px solid #fcd34d; color: #92400e; border-radius: 8px;
+                   padding: 8px 10px; font-weight: 700; }
 
 .sum-row  { display: flex; justify-content: space-between; align-items: flex-start; padding: 11px 0; border-bottom: 1px solid #f8fafc; gap: 10px; }
 .sum-proc { font-size: 11px; color: #94a3b8; font-weight: 600; text-transform: uppercase; }
@@ -1565,7 +1568,17 @@ async function decodeScaledPhoto(file) {
   });
 }
 
-async function stampImage(file) {
+// Text burned onto every photo besides the timestamp: "Process 040 · Material Extruding ·
+// Rubber Extruder (RE-01)". `extra` appends e.g. the braiding machine ("BR-05").
+function photoProcessLabel(procNo, extra) {
+  try {
+    const proc = buildProcesses(S.product).find(p => p.no === procNo);
+    if (!proc) return "";
+    return `Process ${proc.no} · ${proc.name} · ${proc.machine}` + (extra ? ` · ${extra}` : "");
+  } catch (e) { return ""; }
+}
+
+async function stampImage(file, label) {
   const src = await decodeScaledPhoto(file);
   let w = src.naturalWidth  || src.width;
   let h = src.naturalHeight || src.height;
@@ -1585,18 +1598,28 @@ async function stampImage(file) {
     day:"2-digit", month:"short", year:"numeric",
     hour:"2-digit", minute:"2-digit", second:"2-digit"
   });
-  const fontSize = Math.max(16, Math.round(w * 0.028));
+  let fontSize = Math.max(16, Math.round(w * 0.028));
   ctx.font = `bold ${fontSize}px Arial`;
-  const textW = ctx.measureText(stamp).width;
+  // Two lines when a process label is given (label on top, timestamp below). The label can be
+  // long, so shrink the font until the widest line fits within ~94% of the photo width.
+  const lines = label ? [label, stamp] : [stamp];
+  const maxW = w * 0.94;
+  let widest = Math.max(...lines.map(t => ctx.measureText(t).width));
+  while (widest + fontSize > maxW && fontSize > 10) {
+    fontSize -= 1;
+    ctx.font = `bold ${fontSize}px Arial`;
+    widest = Math.max(...lines.map(t => ctx.measureText(t).width));
+  }
   const pad = fontSize * 0.5;
-  const boxW = textW + pad * 2, boxH = fontSize + pad * 1.4;
+  const lineH = fontSize * 1.25;
+  const boxW = widest + pad * 2, boxH = lineH * lines.length + pad * 0.8;
   const x = w - boxW - fontSize * 0.4, y = h - boxH - fontSize * 0.4;
 
   ctx.fillStyle = "rgba(0,0,0,0.55)";
   ctx.fillRect(x, y, boxW, boxH);
   ctx.fillStyle = "#FFD400";
   ctx.textBaseline = "middle";
-  ctx.fillText(stamp, x + pad, y + boxH / 2);
+  lines.forEach((t, i) => ctx.fillText(t, x + pad, y + pad * 0.4 + lineH * (i + 0.5)));
 
   const blob = await new Promise((resolve, reject) => {
     canvas.toBlob(b => b ? resolve(b) : reject(new Error("Could not encode photo")), "image/jpeg", 0.85);
@@ -1631,16 +1654,19 @@ async function handlePhotoSelect(key, inputEl) {
 
   const e0 = curEntries()[key] || {};
   e0.photoStatus = "uploading";
+  delete e0.photoRead;                 // a retake invalidates the previous photo's reading
   curEntries()[key] = e0;
   render();
 
+  let uploaded = false;
   try {
-    const blob = await stampImage(file);
+    const blob = await stampImage(file, photoProcessLabel(key.split("_")[0]));
     const url = await uploadToCloudinary(blob, photoContext(`check=${key}`));
     const e1 = curEntries()[key] || {};
     e1.photo = url;
     e1.photoStatus = "done";
     curEntries()[key] = e1;
+    uploaded = true;
   } catch (err) {
     const e1 = curEntries()[key] || {};
     e1.photoStatus = "error";
@@ -1649,6 +1675,9 @@ async function handlePhotoSelect(key, inputEl) {
   }
   render();
   silentCheckpoint(); // push the finished photo URL to the Sheet too (background, not awaited)
+  // Caliper checks only: have the photo's number compared with the selection (advisory).
+  const chk = findCheckByKey(key);
+  if (uploaded && chk && chk.method === "Vernier Caliper") checkPhotoReading("entries", key);
 }
 
 async function handleBraidPhotoSelect(m, inputEl) {
@@ -1658,16 +1687,20 @@ async function handleBraidPhotoSelect(m, inputEl) {
 
   const b0 = curBraiding()[m] || {};
   b0.photoStatus = "uploading";
+  delete b0.photoRead;
   curBraiding()[m] = b0;
   render();
 
+  let uploaded = false;
   try {
-    const blob = await stampImage(file);
+    const braidProc = buildProcesses(S.product).find(p => p.type === "braiding");
+    const blob = await stampImage(file, braidProc ? photoProcessLabel(braidProc.no, m) : "");
     const url = await uploadToCloudinary(blob, photoContext(`machine=${m}`));
     const b1 = curBraiding()[m] || {};
     b1.photo = url;
     b1.photoStatus = "done";
     curBraiding()[m] = b1;
+    uploaded = true;
   } catch (err) {
     const b1 = curBraiding()[m] || {};
     b1.photoStatus = "error";
@@ -1676,15 +1709,96 @@ async function handleBraidPhotoSelect(m, inputEl) {
   }
   render();
   silentCheckpoint();
+  if (uploaded) checkPhotoReading("braid", m);   // braiding photos are all caliper shots
 }
 
+// ── Photo vs. selection check (advisory only) ──
+// For caliper photos (checks whose method is "Vernier Caliper", plus every braiding machine),
+// a vision model reads the number off the LCD (/api/readcaliper) and it's compared with the
+// size/value the operator selected. A mismatch, or a photo too blurry to read, shows a
+// caution under the photo status. It NEVER blocks Next, and if the service is unreachable or
+// not configured it simply says nothing. The reading is stored on the entry (photoRead), so
+// the comparison is recomputed whenever the selection changes — correcting the size updates
+// or clears the caution. Not written to the Sheet (no schema change).
+function findCheckByKey(key) {
+  const procNo = key.split("_")[0], ck = key.slice(procNo.length + 1);
+  const proc = buildProcesses(S.product).find(p => p.no === procNo);
+  return proc ? (proc.checks || []).find(c => c.key === ck) : null;
+}
+
+function parseSelectedRange(label) {
+  const s = String(label || "");
+  let m = s.match(/(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)/);
+  if (m) return { lo: +m[1], hi: +m[2] };
+  m = s.match(/^\s*<\s*(\d+(?:\.\d+)?)/);
+  if (m) return { lo: -Infinity, hi: +m[1] - 0.01 };
+  m = s.match(/^\s*>\s*(\d+(?:\.\d+)?)/);
+  if (m) return { lo: +m[1] + 0.01, hi: Infinity };
+  m = s.match(/^\s*(\d+(?:\.\d+)?)\s*$/);               // a typed value (Crimp O.D.)
+  if (m) return { lo: +m[1] - 0.05, hi: +m[1] + 0.05 };
+  return null;                                          // e.g. braiding "FAIL" — no number to compare
+}
+
+function photoReadNote(e) {
+  const r = e && e.photoRead;
+  if (!e || !e.photo || !r || r.pending || e.result === "NO_RUN") return "";
+  if (!r.readable || r.confidence === "low") return "⚠ Photo is blurry or unclear — retake";
+  const range = parseSelectedRange(e.label);
+  if (!range) return "";
+  const tol = 0.006;
+  if (r.reading >= range.lo - tol && r.reading <= range.hi + tol) return "";
+  return `⚠ Photo reads ${r.reading.toFixed(2)}, you selected ${e.label} — retake or correct`;
+}
+function photoNoteHtml(e) {
+  if (e && e.photoRead && e.photoRead.pending) return `<div class="photo-note">&#128269; Checking photo&hellip;</div>`;
+  const note = photoReadNote(e);
+  return note ? `<div class="photo-note photo-note-warn">${esc(note)}</div>` : "";
+}
+
+async function checkPhotoReading(kind, key) {
+  const rd = S.roundData[S.currentRound];
+  const store = kind === "braid" ? rd.braiding : rd.entries;
+  const e = store[key];
+  if (!e || !e.photo) return;
+  const url = e.photo;
+  e.photoRead = { pending: true };
+  render();
+  try {
+    const res = await fetch("/api/readcaliper", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ imageUrl: url })
+    });
+    const data = await res.json();
+    const cur = store[key];
+    if (!cur || cur.photo !== url) return;               // retaken/changed meanwhile — drop it
+    if (res.ok && typeof data.readable === "boolean") {
+      cur.photoRead = { readable: data.readable, reading: data.reading, confidence: data.confidence };
+    } else {
+      delete cur.photoRead;                              // service unavailable — say nothing
+    }
+  } catch (err) {
+    const cur = store[key];
+    if (cur && cur.photoRead && cur.photoRead.pending) delete cur.photoRead;
+  }
+  render();
+}
+
+// A photo is COMPULSORY on every check/machine that has a photo slot, except No Run. There is
+// no "Add photo" button any more: the camera opens by itself when a reading is picked (see
+// maybeOpenCamera()). This status line only appears once a reading exists, and is also the
+// way to retry a failed upload, retake a photo, or take one after cancelling the camera.
+// Nothing shows before a reading is picked, or for No Run.
 function rPhotoBadge(entry, inputId) {
   const status = entry?.photoStatus;
+  const hasReading = !!entry?.result && entry.result !== "NO_RUN";
+  if (!hasReading) return "";
   let badge;
   if (status === "uploading") badge = `<span class="photo-badge photo-uploading">&#8987; Uploading&hellip;</span>`;
   else if (status === "error") badge = `<span class="photo-badge photo-error">&#9888; Upload failed &middot; tap to retry</span>`;
-  else if (entry?.photo) badge = `<span class="photo-badge photo-done">&#128247; Photo attached &#10003;</span>`;
-  else badge = `<span class="photo-badge photo-empty">&#128247; Add photo (optional)</span>`;
+  else if (entry?.photo) badge = `<span class="photo-badge photo-done">&#128247; Photo attached &#10003; &middot; tap to retake</span>`;
+  else if (entry?.fromSheet) return "";   // pulled back from the Sheet — photo already on file there
+  else badge = `<span class="photo-badge photo-error">&#128247; Photo required &middot; tap to open camera</span>`;
   // Force an explicit, local-only save the instant this is tapped — belt-and-suspenders
   // against the camera handoff backgrounding (or the OS killing) this tab before the next
   // normal render()/saveState() would otherwise fire. No network call, no added delay.
@@ -1820,10 +1934,19 @@ function isCheckDone(chk, key) {
   // done — it used to fall through to `return true` below, which marked the check complete
   // with a blank value (rendering "undefined / undefined") and let Next proceed unfilled.
   if (!e.result) return false;
-  if (chk.type === "pf_sub") return !!e.label;
-  if (chk.type === "manual") return !!e.label;
-  if (chk.type === "pf_manual") return e.result==="FAIL" || !!e.label;
-  return true;
+  if (chk.type === "pf_sub" && !e.label) return false;
+  if (chk.type === "manual" && !e.label) return false;
+  if (chk.type === "pf_manual" && !(e.result==="FAIL" || e.label)) return false;
+  return photoSatisfied(chk, e);
+}
+
+// Photo rule: a check with a photo slot needs a photo attached unless it's No Run. Entries
+// rebuilt from the Sheet (fromSheet) are exempt — their photo URL, if any, lives on the
+// Sheet row and isn't re-hydrated, and a resumed round must not be blocked on that.
+function photoSatisfied(chk, e) {
+  if (!chk || !chk.photo) return true;
+  if (e.result === "NO_RUN" || e.fromSheet || e.auto) return true;
+  return !!e.photo;
 }
 
 // ═══════════════════════════════════════════════
@@ -2219,7 +2342,8 @@ function isProcDone(proc) {
     const n   = PRODUCTS[S.product].braiding.machines;
     const ms  = Array.from({length:n}, (_,i) => `BR-${String(i+1).padStart(2,"0")}`);
     const brg = curBraiding();
-    return ms.every(m => brg[m] && brg[m].result);
+    // Every machine needs a result, and a photo too unless it's No Run (see photoSatisfied()).
+    return ms.every(m => brg[m] && brg[m].result && photoSatisfied({ photo:true }, brg[m]));
   }
   return proc.checks.every(c => isCheckDone(c, pkey(proc.no, c.key)));
 }
@@ -2462,11 +2586,6 @@ function rSetup() {
         const blocking = batchEntry ? findBlockingRound(batchEntry) : null;
         return blocking ? `<div style="font-size:12px;color:#c2410c;margin-top:6px;">🔒 ${esc(blocking.label)} used "No Run" and isn't fully verified yet — new shifts on this batch are locked until it is.</div>` : "";
       })()}
-      <label style="display:flex;align-items:center;gap:8px;margin-top:14px;font-weight:600;font-size:13px;color:#475569;cursor:pointer;">
-        <input type="checkbox" style="width:18px;height:18px;" ${cameraOnSelectEnabled()?"checked":""}
-          onchange="setCameraOnSelect(this.checked)">
-        📷 Open camera when a size is selected (this device)
-      </label>
       <label>Prepared By (Device ID)</label>
       <select id="s-op" onchange="S.operator=this.value;render()"><option value="">— Select —</option>${duOpts}</select>
       <label>PIN</label>
@@ -2869,6 +2988,7 @@ function rChecks(proc) {
         ${body}
         ${complete ? `<div class="check-rec"><span>${e.label}</span><span style="color:#94a3b8">${e.time}</span></div>` : ""}
         ${photoHtml}
+        ${c.method === "Vernier Caliper" ? photoNoteHtml(e) : ""}
       </div>`;
   }).join("");
 }
@@ -2891,7 +3011,13 @@ function rBraiding(proc) {
       else if (entry.result==="FAIL") { cls="b-fail"; lbl = "FAIL"; }
       else                            { cls="b-na";   lbl = "No Run"; }
     }
-    const photoDot = entry?.photo ? `<span class="braid-photo-dot" title="Photo attached">&#128247;</span>` : "";
+    // 📷 once a photo is attached; ⚠ on a machine that has a reading but no photo yet (photo is
+    // compulsory except No Run) — tap the machine, then the "Photo required" line, to take it.
+    const needsPhoto = !!entry && !!entry.result && !photoSatisfied({ photo:true }, entry);
+    const readNote = photoReadNote(entry);
+    const photoDot = readNote      ? `<span class="braid-photo-dot" title="${esc(readNote)}">&#9888;</span>`
+                   : entry?.photo  ? `<span class="braid-photo-dot" title="Photo attached">&#128247;</span>`
+                   : needsPhoto    ? `<span class="braid-photo-dot" title="Photo required">&#9888;</span>` : "";
     return `<div class="braid-cell ${cls}" onclick="selectBraidMachine('${m}')">
       ${photoDot}
       <div class="braid-machine">${m}</div>
@@ -2923,8 +3049,7 @@ function rBraiding(proc) {
             onclick="recordBraid('${S.activeBraid}','NO_RUN','No Run')">⊘ No Run</button>
         </div>
         ${rPhotoBadge(existing, braidPhotoInputId)}
-        <input type="file" accept="image/*" capture="environment" id="${braidPhotoInputId}" style="display:none"
-          onchange="handleBraidPhotoSelect('${S.activeBraid}', this)">
+        ${photoNoteHtml(existing)}
         <div class="braid-panel-cancel" onclick="S.activeBraid=null;render()">✕ Cancel</div>
       </div>`;
   }
@@ -2942,6 +3067,8 @@ function rBraiding(proc) {
       <strong>Method:</strong> Vernier Caliper &nbsp;·&nbsp; <span style="color:#94a3b8">Tap a machine to set its result</span>
     </div>
     <div class="braid-grid">${cells}</div>
+    ${ms.map(m => `<input type="file" accept="image/*" capture="environment" style="display:none"
+        id="${`photo_braid_${m}`.replace(/[^a-zA-Z0-9_]/g, "_")}" onchange="handleBraidPhotoSelect('${m}', this)">`).join("")}
     ${panel}
     ${tallyHtml}`;
 }
@@ -2953,57 +3080,73 @@ function selectBraidMachine(m) {
 
 function recordBraid(m, result, label) {
   const existing = curBraiding()[m] || {};
-  curBraiding()[m] = { ...existing, result, label };
+  curBraiding()[m] = { ...existing, result, label, fromSheet: false };
   S.activeBraid  = null;
-  render();
+  render();   // saves the chosen result locally BEFORE the camera can open
+  maybeOpenBraidCamera(m);
+}
+
+// Opens the camera for a photo slot, straight from the tap that picked the reading (browsers
+// only allow that from a direct user gesture, so this must run synchronously inside the
+// handler, after render() so the hidden file input exists). Rules:
+//  - never for No Run, and only if a real reading is set;
+//  - only the FIRST time for this check (camAsked), so fixing a mis-tap or re-selecting
+//    after cancelling the camera doesn't re-open it — the "Photo required" status line is
+//    the way back in for that;
+//  - not if a photo is already attached or an upload is in flight.
+function openCameraFor(entry, inputId) {
+  if (!entry || !entry.result || entry.result === "NO_RUN") return;
+  if (entry.camAsked || entry.photo || entry.photoStatus === "uploading") return;
+  if (S.screen !== "process") return;
+  const inp = document.getElementById(inputId);
+  if (!inp) return;
+  entry.camAsked = true;
+  saveState();
+  silentCheckpoint();
+  inp.click();
+}
+function maybeOpenCamera(key) {
+  openCameraFor(curEntries()[key], `photo_${key}`.replace(/[^a-zA-Z0-9_]/g, "_"));
+}
+function maybeOpenBraidCamera(m) {
+  openCameraFor(curBraiding()[m], `photo_braid_${m}`.replace(/[^a-zA-Z0-9_]/g, "_"));
 }
 
 // ── entry recorders ──
 // All of these merge onto any existing entry (rather than replacing it outright) so a
 // photo already attached via handlePhotoSelect()/handleBraidPhotoSelect() — which itself
 // merges — is never silently wiped out just because the operator taps a result afterward.
+// Camera opens (see maybeOpenCamera()) on: a band/size pick, Pass/Fail buttons, Crimp O.D.'s
+// Pass, and Air Leakage's range pick. `fromSheet:false` marks the value as freshly entered
+// now, so a hydrated entry that's re-picked is held to the photo rule like any other.
 function recordPF(key, result, label) {
   const existing = curEntries()[key] || {};
-  curEntries()[key] = { ...existing, result, label, time: nowTime() }; render();
+  curEntries()[key] = { ...existing, result, label, time: nowTime(), fromSheet: false }; render();
+  maybeOpenCamera(key);
 }
 function selectPass(key) {
   const existing = curEntries()[key] || {};
-  curEntries()[key] = { ...existing, result:"PASS", label:"", time: nowTime() }; render();
+  curEntries()[key] = { ...existing, result:"PASS", label:"", time: nowTime(), fromSheet: false }; render();
+  // Crimp O.D. (pass/fail + typed value): open on PASS. Air Leakage (pass + range) opens
+  // later, on the range pick — recordSub().
+  const procNo = key.split("_")[0], ck = key.slice(procNo.length + 1);
+  const chk = (buildProcesses(S.product).find(p => p.no === procNo)?.checks || []).find(c => c.key === ck);
+  if (chk && chk.type === "pf_manual") maybeOpenCamera(key);
 }
 function recordSub(key, range) {
   const existing = curEntries()[key] || {};
-  curEntries()[key] = { ...existing, result:"PASS", label:range, time: nowTime() }; render();
+  curEntries()[key] = { ...existing, result:"PASS", label:range, time: nowTime(), fromSheet: false }; render();
+  maybeOpenCamera(key);
 }
-// Per-device (Setup screen toggle, ON by default): tapping a size/band that has a photo slot
-// opens the camera straight away, instead of needing a second tap on "Add photo". Only an
-// explicit "0" (someone unticked it on this device) turns it off.
-const CAMERA_ON_SELECT_KEY = "fqa12_camera_on_select_v1";
-function cameraOnSelectEnabled() {
-  try { return localStorage.getItem(CAMERA_ON_SELECT_KEY) !== "0"; } catch (e) { return true; }
-}
-function setCameraOnSelect(on) {
-  try { localStorage.setItem(CAMERA_ON_SELECT_KEY, on ? "1" : "0"); } catch (e) {}
-  render();
-}
-
 function recordBand(key, result, label) {
   const existing = curEntries()[key] || {};
-  curEntries()[key] = { ...existing, result, label, time: nowTime() };
+  curEntries()[key] = { ...existing, result, label, time: nowTime(), fromSheet: false };
   if (key === pkey("090","Length")) {
     if (result === "NO_RUN") applyLengthNoRunCascade();
     else revertLengthNoRunCascade();
   }
   render();   // saves the chosen value locally BEFORE the camera can open
-  // Camera hand-off must happen synchronously inside this tap (browsers only allow it from a
-  // direct user gesture). Only when: the option is on, a real reading was picked (not No
-  // Run), this is the FIRST reading picked for this check (existing.result unset — so fixing
-  // a mis-tap, or re-selecting after cancelling the camera, never re-opens it; the "Add
-  // photo" button is still there for that), and it has no photo or upload in flight.
-  if (cameraOnSelectEnabled() && result !== "NO_RUN" && S.screen === "process"
-      && !existing.result && !existing.photo && existing.photoStatus !== "uploading") {
-    const inp = document.getElementById(`photo_${key}`.replace(/[^a-zA-Z0-9_]/g, "_"));
-    if (inp) { silentCheckpoint(); inp.click(); }
-  }
+  maybeOpenCamera(key);
 }
 
 // If Part Off (090) Length is No Run, the hose was never cut this round, which means
@@ -3104,7 +3247,7 @@ function navNext() {
   // was possible to tap through an entire process with nothing entered and only find out
   // at final submission (submitForVerification() already enforces this same rule there),
   // by which point a verifier could be looking at a process that was silently skipped.
-  if (!isProcDone(proc)) { alert("Please complete every reading for this process before moving on (or mark it No Run if applicable)."); return; }
+  if (!isProcDone(proc)) { alert("Please complete every reading for this process before moving on — each one also needs its photo (or mark it No Run if applicable)."); return; }
 
   // Every shift EXCEPT Approval Sample is capped at wherever Approval Sample's own
   // verification currently stands — see enforceShiftGate()/approvalSampleVerifiedThru().
@@ -4693,8 +4836,23 @@ function fmtSavedAt(iso) {
   } catch (e) { return iso; }
 }
 
+// An upload that was in flight when the tab died can never finish — its JS is gone — but its
+// saved "uploading" status would otherwise show forever with nothing to tap. Photos are now
+// compulsory, so turn those into a retryable "failed" state on resume.
+function clearStaleUploads() {
+  (S.roundData || []).forEach(rd => {
+    [rd && rd.entries, rd && rd.braiding].forEach(group => {
+      Object.values(group || {}).forEach(e => {
+        if (e && e.photoStatus === "uploading") { e.photoStatus = "error"; e.photoError = "Interrupted"; }
+        if (e && e.photoRead && e.photoRead.pending) delete e.photoRead;   // check was interrupted
+      });
+    });
+  });
+}
+
 function resumeSession(saved) {
   S = saved;
+  clearStaleUploads();
   render();
   if ((S.screen === "submitted" || S.screen === "report" || S.screen === "paused") && S.submitStatus !== "done") {
     submitToSheet();
