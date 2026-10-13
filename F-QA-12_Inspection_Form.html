@@ -1358,6 +1358,26 @@ async function loadLiveProducts() {
   }
 }
 
+// Quiet one-off refresh of the live product list (no re-render, so nothing typed on Setup is
+// disturbed). Used when a batch's product isn't in this device's PRODUCTS yet — e.g. the
+// device's cached list is older than a product added to the Products tab, or the background
+// load at page start failed. Returns true if the product is now known.
+async function ensureProductKnown(code) {
+  if (PRODUCTS[code]) return true;
+  try {
+    const res = await fetch("/api/log?sheet=Products", { cache: "no-store" });
+    if (!res.ok) return false;
+    const json = await res.json();
+    const rows = json.rows || [];
+    const parsed = parseProductsFromRows(rows);
+    if (Object.keys(parsed).length) {
+      PRODUCTS = parsed;
+      try { localStorage.setItem(PRODUCTS_CACHE_KEY, JSON.stringify(rows)); } catch (e) {}
+    }
+  } catch (e) { /* fall through */ }
+  return !!PRODUCTS[code];
+}
+
 const OPERATORS   = ["Alam","Amar","Amit","Anish","Anita","Ankit","Chintu","Devender","Dinesh","Durga Prasad","Geeta","Gurdeep","Jinku","Kailsah","Mangal","Rajesh","Rakesh","Sahil","Sailesh","Sulekha","Pooja","Rajender","Choote Chowdhary","Kiran Bharai","Other"];
 const SUPERVISORS = ["Saksham","QA Manager","Shift Supervisor","Other"];
 // The 4 people who actually carry a device (or log into one) — distinct from OPERATORS
@@ -2684,7 +2704,19 @@ async function continueBatchClicked() {
   if (!pin)  { alert("Please enter your PIN."); return; }
   if (!(await verifyDevicePin(name, pin))) return;
   try { localStorage.setItem(LAST_DEVICE_USER_KEY, name); } catch (e) {}
-  continueBatch();
+  try {
+    // This device may not know the batch's product yet (stale/failed product list) — refresh
+    // it first instead of failing silently.
+    const info = mergedBatchRegistry()[S.selectedBatch];
+    if (info && info.product && !(await ensureProductKnown(info.product))) {
+      alert(`This device doesn't have the product "${info.product}" in its product list yet. Check the internet connection, refresh the page, and try again. If it still fails, ask the admin to check the Products tab.`);
+      return;
+    }
+    continueBatch();
+  } catch (e) {
+    console.error("continueBatch failed:", e);
+    alert("Couldn't continue this batch: " + (e && e.message ? e.message : e) + "\n\nPlease refresh the page and try again. If it keeps happening, tell the admin.");
+  }
 }
 
 function startInspection() {
