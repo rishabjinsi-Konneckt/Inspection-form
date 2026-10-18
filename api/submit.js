@@ -1,4 +1,8 @@
-const { getAccessToken, setCors } = require('./_google');
+const { getAccessToken, setCors, isAuthorized, isAdminAuthorized } = require('./_google');
+
+// Structural/destructive modes — never called by the app itself, admin-only tools — require
+// the stronger admin secret in addition to the regular app secret checked below.
+const ADMIN_ONLY_MODES = ['grow', 'createSheet', 'rename'];
 
 module.exports = async function handler(req, res) {
   setCors(res);
@@ -6,11 +10,19 @@ module.exports = async function handler(req, res) {
   if (req.method !== 'POST') { res.status(405).json({ error: 'Method not allowed' }); return; }
 
   try {
+    if (!isAuthorized(req)) { res.status(401).json({ error: 'Unauthorized' }); return; }
+
     const sheetId = process.env.GOOGLE_SHEET_ID;
     if (!sheetId) throw new Error('Missing GOOGLE_SHEET_ID env var');
 
     const body = req.body || {};
     const mode = ['update', 'meta', 'grow', 'createSheet', 'rename'].includes(body.mode) ? body.mode : 'append';
+
+    if (ADMIN_ONLY_MODES.includes(mode) && !isAdminAuthorized(req)) {
+      res.status(403).json({ error: 'Forbidden — this operation requires admin authorization' });
+      return;
+    }
+
     const token = await getAccessToken();
 
     // ── meta: fetch sheet properties (sheetId/title/columnCount) ──
