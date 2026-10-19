@@ -3122,10 +3122,10 @@ function rBraiding(proc) {
         <div class="braid-panel-title">📍 ${S.activeBraid} — Select O.D. result:</div>
         <div class="braid-panel-opts">
           ${bandBtns}
-          <button class="braid-opt bo-fail ${failOn}"
-            onclick="recordBraid('${S.activeBraid}','FAIL','FAIL')">✗ FAIL</button>
           <button class="braid-opt bo-na ${naOn}"
             onclick="recordBraid('${S.activeBraid}','NO_RUN','No Run')">⊘ No Run</button>
+          <button class="braid-opt bo-fail ${failOn}"
+            onclick="recordBraid('${S.activeBraid}','FAIL','FAIL')">✗ FAIL</button>
         </div>
         ${rPhotoBadge(existing, braidPhotoInputId)}
         ${photoNoteHtml(existing)}
@@ -3136,8 +3136,8 @@ function rBraiding(proc) {
   const tallyHtml = (st.passN + st.failN + st.naN) > 0 ? `
     <div class="braid-tally">
       <div class="tally-chip t-pass">✓ ${st.passN} PASS</div>
-      <div class="tally-chip t-fail">✗ ${st.failN} FAIL</div>
       <div class="tally-chip t-na">⊘ ${st.naN} No Run</div>
+      <div class="tally-chip t-fail">✗ ${st.failN} FAIL</div>
     </div>` : "";
 
   return `
