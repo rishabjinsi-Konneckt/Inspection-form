@@ -2892,6 +2892,14 @@ function continueBatch() {
     S.dayRowNum = null;
   }
   S.activeBraid = null;
+  // A remembered resume point can sit past the end of this product's process list (the last
+  // process was already completed, or the product's process list changed since it was saved).
+  // Keep it inside the list so the Process screen always has a process to show.
+  {
+    const lastIdx = Math.max(0, buildProcesses(S.product).length - 1);
+    S.processIdx = Math.min(Math.max(parseInt(S.processIdx, 10) || 0, 0), lastIdx);
+    S.reportedThroughIdx = Math.min(Math.max(parseInt(S.reportedThroughIdx, 10) || 0, 0), lastIdx);
+  }
   // procOperators / roundData / verified intentionally NOT reset — progress continues.
   S.screen = "process"; render();
 }
@@ -2901,6 +2909,7 @@ function continueBatch() {
 // ═══════════════════════════════════════════════
 function rProcess() {
   const procs = buildProcesses(S.product);
+  if (!(S.processIdx >= 0 && S.processIdx < procs.length)) S.processIdx = Math.max(0, Math.min(parseInt(S.processIdx, 10) || 0, procs.length - 1));
   const proc  = procs[S.processIdx];
   const total = procs.length;
   const pct   = Math.round((S.processIdx / total) * 100);
@@ -3122,10 +3131,10 @@ function rBraiding(proc) {
         <div class="braid-panel-title">📍 ${S.activeBraid} — Select O.D. result:</div>
         <div class="braid-panel-opts">
           ${bandBtns}
-          <button class="braid-opt bo-fail ${failOn}"
-            onclick="recordBraid('${S.activeBraid}','FAIL','FAIL')">✗ FAIL</button>
           <button class="braid-opt bo-na ${naOn}"
             onclick="recordBraid('${S.activeBraid}','NO_RUN','No Run')">⊘ No Run</button>
+          <button class="braid-opt bo-fail ${failOn}"
+            onclick="recordBraid('${S.activeBraid}','FAIL','FAIL')">✗ FAIL</button>
         </div>
         ${rPhotoBadge(existing, braidPhotoInputId)}
         ${photoNoteHtml(existing)}
@@ -3136,8 +3145,8 @@ function rBraiding(proc) {
   const tallyHtml = (st.passN + st.failN + st.naN) > 0 ? `
     <div class="braid-tally">
       <div class="tally-chip t-pass">✓ ${st.passN} PASS</div>
-      <div class="tally-chip t-fail">✗ ${st.failN} FAIL</div>
       <div class="tally-chip t-na">⊘ ${st.naN} No Run</div>
+      <div class="tally-chip t-fail">✗ ${st.failN} FAIL</div>
     </div>` : "";
 
   return `
@@ -4675,8 +4684,95 @@ function openVrDetail(rowNum) {
   S.vrDetailRow = row;
   S.vrJustVerified = false;
   S.vrApprovals = {}; // per-process Approve/Not Approve state for THIS review pass — see rVrDetail()/setVrApproval()
+  S.vrPhotosSeen = {}; // photo URLs the verifier has opened this pass — Approve stays locked until they have
   S.screen = "vrdetail";
   render();
+  vrReadAllPhotos(row);
+}
+
+// ── Verifier photo review ──
+// Every photo-bearing reading on a 🆕 New process is listed with the recorded value. The
+// verifier must OPEN each photo before that process's Approve unlocks; a missing photo (on a
+// reading that isn't No Run) blocks Approve too. Caliper photos are also read by the same
+// vision service operators see (/api/readcaliper) and compared with the recorded band — a
+// mismatch is flagged in red and approving it needs an explicit confirmation.
+// Photo evidence is only enforced for rows dated on/after this day — older rows predate the
+// mandatory-photo rule and would otherwise be un-approvable.
+const PHOTO_RULE_FROM = "2026-10-14";
+function vrProcPhotos(row, proc) {
+  const out = [];
+  const enforce = String(row.Date || "") >= PHOTO_RULE_FROM;
+  if (proc.type === "braiding") {
+    const n = (PRODUCTS[row.Product] || {braiding:{machines:0}}).braiding.machines;
+    for (let i = 1; i <= n; i++) {
+      const m = `BR-${String(i).padStart(2,"0")}`;
+      const val = row[`${m} O.D.`];
+      if (!val) continue;
+      out.push({ label: m, url: logBraidPhoto(row, m), val, caliper: true, required: enforce && val !== "No Run" });
+    }
+    return out;
+  }
+  proc.checks.forEach(c => {
+    if (!c.photo) return;
+    const val = vrSheetValue(row, proc.no, c.key);
+    const url = logPhotoValue(proc.no, c.key, row);
+    if (!url && (val === null || val === "")) return;
+    out.push({ label: c.key, url, val: val || "", caliper: c.method === "Vernier Caliper", required: enforce && val !== "No Run" });
+  });
+  return out;
+}
+function vrPhotoIssue(it) {
+  if (!it.url) return it.required ? "Photo missing" : "";
+  if (!it.caliper) return "";
+  const r = (S.vrPhotoReads || {})[it.url];
+  if (!r || r.pending || r.unavailable) return "";
+  if (!r.readable || r.confidence === "low") return "Photo unreadable — check it by eye";
+  const range = parseSelectedRange(it.val);
+  if (!range) return "";
+  const tol = 0.006;
+  if (r.reading >= range.lo - tol && r.reading <= range.hi + tol) return "";
+  return `Photo reads ${r.reading.toFixed(2)} but recorded ${it.val}`;
+}
+function vrProcReady(items) {
+  return items.every(it => !it.required || (it.url && (S.vrPhotosSeen || {})[it.url]));
+}
+function vrMarkSeen(url) {
+  if (!S.vrPhotosSeen) S.vrPhotosSeen = {};
+  S.vrPhotosSeen[url] = true;
+  setTimeout(render, 150); // after the new tab opens, so the Approve button unlocks when they return
+}
+function vrPhotoHtml(items) {
+  if (!items.length) return "";
+  const seen = S.vrPhotosSeen || {};
+  const rowsHtml = items.map(it => {
+    const issue = vrPhotoIssue(it);
+    const read = it.url && it.caliper ? (S.vrPhotoReads || {})[it.url] : null;
+    const link = it.url
+      ? `<a href="${esc(it.url)}" target="_blank" rel="noopener" onclick="vrMarkSeen('${esc(it.url)}')" style="font-size:12px;font-weight:700;color:#2563eb;">${seen[it.url] ? "✓ Viewed" : "📷 Open photo"}</a>`
+      : (it.required ? `<span style="font-size:12px;font-weight:700;color:#dc2626;">❌ Photo missing</span>` : `<span style="font-size:12px;color:#94a3b8;">No Run</span>`);
+    const readTxt = read && read.pending ? ` <span style="font-size:11px;color:#64748b;">reading photo…</span>` : "";
+    const warn = issue ? `<div style="font-size:12px;color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:4px 8px;margin-top:4px;">⚠ ${esc(issue)}</div>` : "";
+    return `<div style="padding:4px 0;"><div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;"><span>${esc(it.label)} · ${esc(it.val || "—")}</span><span>${link}${readTxt}</span></div>${warn}</div>`;
+  }).join("");
+  return `<div style="margin-top:8px;border-top:1px dashed #d8b4fe;padding-top:6px;"><div style="font-size:11px;font-weight:700;color:#7c3aed;">PHOTO EVIDENCE — open each before approving</div>${rowsHtml}</div>`;
+}
+async function vrReadAllPhotos(row) {
+  if (!S.vrPhotoReads) S.vrPhotoReads = {};
+  const procs = PRODUCTS[row.Product] ? buildProcesses(row.Product) : [];
+  const urls = [];
+  procs.forEach(p => vrProcPhotos(row, p).forEach(it => { if (it.url && it.caliper && !S.vrPhotoReads[it.url]) urls.push(it.url); }));
+  for (const url of urls) {
+    S.vrPhotoReads[url] = { pending: true };
+    render();
+    try {
+      const res = await fetch("/api/readcaliper", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ imageUrl: url }) });
+      const data = await res.json();
+      S.vrPhotoReads[url] = (res.ok && typeof data.readable === "boolean")
+        ? { readable: data.readable, reading: data.reading, confidence: data.confidence }
+        : { unavailable: true };
+    } catch (e) { S.vrPhotoReads[url] = { unavailable: true }; }
+    if (S.screen === "vrdetail") render();
+  }
 }
 
 // Records the verifier's Approve/Not Approve choice for one process on the review screen.
@@ -4684,6 +4780,13 @@ function openVrDetail(rowNum) {
 // stale choice from a previous row's review can never leak into this one.
 function setVrApproval(procNo, approved) {
   if (!S.vrApprovals) S.vrApprovals = {};
+  if (approved) {
+    const proc = buildProcesses(S.vrDetailRow.Product).find(p => p.no === procNo);
+    const items = proc ? vrProcPhotos(S.vrDetailRow, proc) : [];
+    if (!vrProcReady(items)) { alert("Open every photo for this process first (a missing photo can't be approved)."); return; }
+    const issues = items.map(vrPhotoIssue).filter(Boolean);
+    if (issues.length && !confirm("Photo check flagged:\n\n" + issues.join("\n") + "\n\nApprove anyway?")) return;
+  }
   S.vrApprovals[procNo] = approved;
   render();
 }
@@ -4842,17 +4945,21 @@ function rVrDetail() {
 
     newProcNos.push(proc.no);
     const state = S.vrApprovals[proc.no]; // true = Approved, false = Not Approved, undefined = undecided
+    const items = vrProcPhotos(row, proc);
+    const ready = vrProcReady(items);
+    const photoHtml = vrPhotoHtml(items);
     return `<div style="margin-bottom:10px;border:1px solid #e9d5ff;border-radius:10px;padding:10px 12px;background:#faf5ff;">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
         <div class="sum-proc">Process ${proc.no} · ${esc(proc.machine)} <span class="badge b-na" style="background:#fff;color:#7c3aed;">🆕 New</span></div>
         <div style="display:flex;gap:6px;">
-          <button type="button" onclick="setVrApproval('${proc.no}', true)"
-            style="padding:6px 12px;border-radius:8px;border:1.5px solid ${state===true?"#16a34a":"#cbd5e1"};background:${state===true?"#dcfce7":"#fff"};color:${state===true?"#15803d":"#475569"};font-size:12px;font-weight:700;cursor:pointer;">✓ Approve</button>
+          <button type="button" ${ready ? "" : "disabled"} onclick="setVrApproval('${proc.no}', true)"
+            style="${ready ? "" : "opacity:.45;cursor:not-allowed;"}padding:6px 12px;border-radius:8px;border:1.5px solid ${state===true?"#16a34a":"#cbd5e1"};background:${state===true?"#dcfce7":"#fff"};color:${state===true?"#15803d":"#475569"};font-size:12px;font-weight:700;cursor:pointer;">✓ Approve</button>
           <button type="button" onclick="setVrApproval('${proc.no}', false)"
             style="padding:6px 12px;border-radius:8px;border:1.5px solid ${state===false?"#dc2626":"#cbd5e1"};background:${state===false?"#fee2e2":"#fff"};color:${state===false?"#b91c1c":"#475569"};font-size:12px;font-weight:700;cursor:pointer;">✗ Not Approve</button>
         </div>
       </div>
       ${detailHtml}
+      ${photoHtml}
     </div>`;
   }).join("");
 
