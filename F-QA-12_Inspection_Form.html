@@ -3663,8 +3663,12 @@ function buildBlockARow(p, rd, shiftLabel, windowed) {
     // 100
     g("100","Assembly").label || "",
     // 120
-    g("120","Crimp O.D.").label || "", g("120","Crimp O.D.").photo || "", g("120","Pressure Testing").photo || "",
-    g("120","Fitting Load Test").photo || "", g("120","Air Leakage").photo || "",
+    g("120","Crimp O.D.").label || "", g("120","Crimp O.D.").photo || "",
+    // These three have a photo column but no separate reading column, so "No Run" has to be
+    // written into the photo column itself or the Sheet would show nothing for them.
+    g("120","Pressure Testing").photo || noRunText(g("120","Pressure Testing")),
+    g("120","Fitting Load Test").photo || noRunText(g("120","Fitting Load Test")),
+    g("120","Air Leakage").photo || noRunText(g("120","Air Leakage")),
     // 130
     g("130","Appearance").label || ""
   ];
@@ -3686,11 +3690,12 @@ function buildSheetRows() {
 // Produces the FULL Block A row (meta + every process 030..130, data and photos alike) in
 // one array — submitToSheet() writes this as a single atomic range, replacing what used to
 // be the main row plus three separate best-effort follow-up writes.
+function noRunText(entry) { return entry && entry.result === "NO_RUN" ? "No Run" : ""; }
 function buildSheetRow() {
   const p = PRODUCTS[S.product];
   if (!p) return null;
   const rd = S.roundData[S.currentRound];
-  if (!rd || !Object.keys(rd.entries).length) return null;
+  if (!rd || (!Object.keys(rd.entries).length && !Object.keys(rd.braiding || {}).length)) return null;
 
   const procs = buildProcesses(S.product);
   const procOrder = {};
@@ -4200,7 +4205,7 @@ function photoLinksForRow(r) {
   const cols = ["O.D. Photo","I.D. Photo","Pressure Photo (P050)","Length Photo (P090)",
     "Crimp O.D. Photo (P120)","Pressure Testing Photo (P120)","Fitting Load Test Photo (P120)","Air Leakage Photo (P120)"];
   const links = [];
-  cols.forEach((c, i) => { if (r[c]) links.push(`<a href="${r[c]}" target="_blank" rel="noopener">📷${links.length+1}</a>`); });
+  cols.forEach((c, i) => { if (r[c] && /^https?:/i.test(r[c])) links.push(`<a href="${r[c]}" target="_blank" rel="noopener">📷${links.length+1}</a>`); });
   if (r["Braiding Photos"]) {
     r["Braiding Photos"].split(";").map(s=>s.trim()).filter(Boolean).forEach((pair) => {
       const url = pair.split(":").slice(1).join(":").trim();
@@ -4231,7 +4236,8 @@ function logPhotoValue(procNo, checkKey, row) {
     "120|Fitting Load Test": "Fitting Load Test Photo (P120)",
     "120|Air Leakage": "Air Leakage Photo (P120)"
   }[`${procNo}|${checkKey}`];
-  return col ? (row[col] || "") : "";
+  const v = col ? (row[col] || "") : "";
+  return /^https?:/i.test(v) ? v : ""; // "No Run" text in a photo column is not a photo
 }
 
 // A machine's photo, preferring its own dedicated "BR-xx Photo" column; falls back to
@@ -4814,6 +4820,10 @@ function vrSheetValue(row, procNo, checkKey) {
   if (procNo === "100" && checkKey === "Assembly")        return row["Assembly (P100)"] || "";
   if (procNo === "120" && checkKey === "Crimp O.D.")  return row["Crimp O.D. Measured (P120)"] || "";
   if (procNo === "130" && checkKey === "Appearance")      return row["Appearance (P130)"] || "";
+  // Photo-only checks: the only cell is the photo column, which holds "No Run" when skipped.
+  if (procNo === "120" && checkKey === "Pressure Testing")  return row["Pressure Testing Photo (P120)"] === "No Run" ? "No Run" : null;
+  if (procNo === "120" && checkKey === "Fitting Load Test") return row["Fitting Load Test Photo (P120)"] === "No Run" ? "No Run" : null;
+  if (procNo === "120" && checkKey === "Air Leakage")       return row["Air Leakage Photo (P120)"] === "No Run" ? "No Run" : null;
   return null; // not tracked in the sheet schema
 }
 function vrJudge(label) {
