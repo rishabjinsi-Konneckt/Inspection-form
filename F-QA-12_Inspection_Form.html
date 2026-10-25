@@ -1890,7 +1890,7 @@ function freshState() {
     submitStatus:"", submitError:"",
     batchBase:"", batchNo:"", batchDay:1, reportedThroughIdx:0, dayRowNum:null,
     selectedBatch:"", batchSearch:"",
-    sheetBatchReg:null, sheetBatchRegLoading:false, sheetBatchRegError:"",
+    sheetBatchReg:null, sheetBatchRegLoading:false, sheetBatchRegError:"", closedRows:null, finalSheetBase:"",
     logFilters:{date:"",product:"",search:""}, logResults:null, logLoading:false, logError:"", logDetailRow:null,
     batchReportFrom:"setup", batchReportBase:"", batchReportDay:1, batchReportRows:null, batchReportLoading:false, batchReportError:"",
     vrPin:"", vrName:"", vrRows:null, vrLoading:false, vrError:"", vrDetailRow:null, vrJustVerified:false
@@ -1908,7 +1908,7 @@ function freshState() {
 // said so, and the next hang or Back press lost the whole inspection. All of these are
 // re-fetched on demand, and mergedBatchRegistry() already handles sheetBatchReg === null.
 const EPHEMERAL_KEYS = [
-  "sheetBatchReg", "sheetBatchRegLoading", "sheetBatchRegError",
+  "sheetBatchReg", "sheetBatchRegLoading", "sheetBatchRegError", "closedRows",
   "logResults", "logLoading", "logError", "logDetailRow",
   "batchReportRows", "batchReportLoading", "batchReportError",
   "vrRows", "vrLoading", "vrError", "vrDetailRow"
@@ -2257,7 +2257,17 @@ async function refreshSheetBatches() {
     const res = await fetch("/api/log", { cache: "no-store", signal: controller.signal });
     const data = await res.json();
     if (!res.ok) throw new Error((data && data.error && (data.error.error?.message || data.error)) || "Couldn't load batches");
-    S.sheetBatchReg = buildSheetBatchRegistry(data.rows || []);
+    const reg = buildSheetBatchRegistry(data.rows || []);
+    // Closed batches live in the "Final Reports" tab. A tab that doesn't exist yet (nothing
+    // closed so far) just means "none". A batch listed there never shows under Continue, even
+    // if removing its rows from Sheet1 didn't finish.
+    try {
+      const fr = await fetch(`/api/log?sheet=${encodeURIComponent("Final Reports")}`, { cache: "no-store", signal: controller.signal });
+      const frData = await fr.json().catch(() => ({}));
+      S.closedRows = fr.ok ? (frData.rows || []) : [];
+    } catch (e) { if (S.closedRows === null) S.closedRows = []; }
+    (S.closedRows || []).forEach(r => { if (r["Batch No."]) delete reg[r["Batch No."]]; });
+    S.sheetBatchReg = reg;
   } catch (err) {
     S.sheetBatchRegError = err.name === "AbortError"
       ? "Timed out reaching the Sheet (it may just be waking up) — tap Retry."
@@ -2429,7 +2439,7 @@ function allEntryKeys() {
 // ═══════════════════════════════════════════════
 function render() {
   const fns = { setup:rSetup, process:rProcess, review:rReview, submitted:rSubmitted, report:rReport, log:rLog, logdetail:rLogDetail,
-    batchreport:rBatchReport, paused:rPaused, vrpin:rVrPin, vrname:rVrName, vrlist:rVrList, vrdetail:rVrDetail };
+    batchreport:rBatchReport, finalsheet:rFinalSheet, paused:rPaused, vrpin:rVrPin, vrname:rVrName, vrlist:rVrList, vrdetail:rVrDetail };
   // Save BEFORE painting, so that if the save fails this very paint can say so.
   saveState();
   document.getElementById("app").innerHTML = saveWarning() + fns[S.screen]();
@@ -2681,7 +2691,9 @@ function rSetup() {
       </div>
       <button class="btn-outline" style="background:#fff7ed;color:#c2410c;border-color:#f97316;" onclick="continueBatchClicked()">↻ Continue This Batch →</button>
       <button class="btn-outline" style="background:#eff6ff;color:#1d4ed8;border-color:#2563eb;" onclick="viewBatchReportClicked()">📄 View Full Report (All Shifts)</button>
+      <button class="btn-outline" style="background:#f1f5f9;color:#334155;border-color:#94a3b8;" onclick="closeBatchClicked()">🔒 Close Batch — Admin only</button>
     </div>` : (S.sheetBatchRegLoading ? `<div style="text-align:center;font-size:12px;color:#94a3b8;margin-top:4px;">Checking for batches from other devices…</div>` : "")}
+    ${closedBatchesHtml()}
     <div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:4px;">F-QA-12 Rev.01 · Eff. 01.04.19</div>`;
 }
 
@@ -3617,6 +3629,375 @@ function colLetter(n) { // 1-indexed column number -> spreadsheet letter(s)
   return s;
 }
 const LAST_SAVED_COL = colLetter(SHEET_HEADERS.indexOf(LAST_SAVED_COL_NAME) + 1);
+
+// ═══════════════════════════════════════════════
+// CLOSE BATCH → FINAL REPORT (groundwork for the PDIR)
+// ═══════════════════════════════════════════════
+// Admin closes a finished batch. Every day of it is merged into ONE averaged "final sheet"
+// (one row per shift, in the "Final Reports" tab); the original daily rows are copied to
+// the "Closed Batches" tab and then removed from Sheet1. The batch then sits under
+// "Closed — awaiting invoice" on the home screen until an invoice number is entered (by
+// Admin or any PIN-verified verifier), after which it moves to "Finished batches".
+// Nothing is ever deleted from Sheet1 until BOTH new tabs have been written AND read back
+// with the expected row counts.
+const FINAL_TAB   = "Final Reports";
+const ARCHIVE_TAB = "Closed Batches";
+const ADMIN_NAME  = SELF_VERIFY_EXEMPT; // "Rishab (Admin)"
+const FINAL_EXTRA_HEADERS = ["Days Worked","Work Dates","Closed By","Closed At","Invoice No.","Invoice Entered By","Invoice Entered At"];
+const FINAL_HEADERS = [...SHEET_HEADERS.slice(0, SHEET_DATA_COLS), ...FINAL_EXTRA_HEADERS];
+
+function quoteTab(t) { return "'" + String(t).replace(/'/g, "''") + "'"; }
+function isBlankCell(v) { return v === undefined || v === null || String(v).trim() === ""; }
+function isPhotoHeader(h) { return /Photo/i.test(h); }
+
+// Reads one reading cell into a number when it is a measured band ("13.60-13.64" → 13.62),
+// an out-of-range bound ("<11.00 FAIL" → 11.00, flagged), or a plain number. Anything else
+// (OK / NG style labels) returns null and is treated as pass/fail.
+function parseReadingNumber(v) {
+  const s = String(v).trim();
+  const num = "(-?\\d+(?:\\.\\d+)?)";
+  const dec = x => (String(x).split(".")[1] || "").length;
+  let m = s.match(new RegExp("^" + num + "\\s*[-–]\\s*" + num + "(?:\\s*(FAIL|✗))?$", "i"));
+  if (m) return { n: (parseFloat(m[1]) + parseFloat(m[2])) / 2, dec: Math.max(dec(m[1]), dec(m[2])), fail: !!m[3] };
+  m = s.match(new RegExp("^[<>≤≥]\\s*" + num + "(?:\\s*(FAIL|✗))?$", "i"));
+  if (m) return { n: parseFloat(m[1]), dec: dec(m[1]), fail: true };
+  m = s.match(new RegExp("^" + num + "$"));
+  if (m) return { n: parseFloat(m[1]), dec: dec(m[1]), fail: false };
+  return null;
+}
+
+// Averages one check across the days a shift was worked. `values` = that check's cell from
+// each day's row (blank cells already removed). Returns the text for the final sheet.
+function aggregateReading(values) {
+  const total = values.length;
+  if (!total) return "";
+  const ran = values.filter(v => String(v).trim() !== "No Run");
+  const noRun = total - ran.length;
+  if (!ran.length) return "No Run";
+  const parsed = ran.map(parseReadingNumber);
+  if (parsed.every(p => p)) {
+    const mean = parsed.reduce((a, p) => a + p.n, 0) / parsed.length;
+    let dec = Math.max(...parsed.map(p => p.dec));
+    if (dec === 0 && Math.abs(mean - Math.round(mean)) > 1e-9) dec = 1;
+    const ng = parsed.filter(p => p.fail).length;
+    return `${mean.toFixed(dec)} (${ran.length}/${total})` + (ng ? ` · NG ${ng}` : "");
+  }
+  const ng = ran.filter(v => /FAIL|✗|Not Smooth|NG/.test(String(v))).length;
+  const ok = ran.length - ng;
+  return `OK ${ok}/${total}` + (ng ? ` · NG ${ng}` : "") + (noRun ? ` · No Run ${noRun}` : "");
+}
+
+function nonBlankCount(r) { return Object.keys(r).filter(k => k !== "__row" && !isBlankCell(r[k])).length; }
+
+// Rows of Sheet1 that belong to one batch (any day), keyed/grouped by day-batch number + shift.
+// If the same shift on the same day has more than one row (past duplicates), only the most
+// complete one counts for readiness and averaging; every row is still archived.
+function batchRowsFromSheet(allRows, base) {
+  const mine = (allRows || []).filter(r => ROUND_LABELS.includes(r["Shift / Sample"]) && parseBatchNo(r["Batch No."] || "").base === base);
+  const best = {};
+  mine.forEach(r => {
+    const k = (r["Batch No."] || "") + "|" + r["Shift / Sample"];
+    const cur = best[k];
+    if (!cur || nonBlankCount(r) > nonBlankCount(cur) || (nonBlankCount(r) === nonBlankCount(cur) && r.__row > cur.__row)) best[k] = r;
+  });
+  return { all: mine, chosen: Object.values(best) };
+}
+
+// Everything that must be true before Admin may close: every counted row finalised and
+// verified all the way through its last filled process.
+function closeBlockers(chosen, product) {
+  const issues = [];
+  chosen.forEach(r => {
+    const label = `${r["Batch No."]} · ${r["Shift / Sample"]}`;
+    const vt = String(r["Verified Thru Process"] || "").trim();
+    if (!r["Finalised At"]) { issues.push(`${label}: not finalised yet`); return; }
+    if (!vt) { issues.push(`${label}: not verified`); return; }
+    const hi = highestFilledProcess(r, product);
+    if (hi && vt !== String(hi)) issues.push(`${label}: verified only thru ${vt} (filled thru ${hi})`);
+  });
+  return issues;
+}
+
+function uniqJoin(vals) { return [...new Set(vals.filter(v => !isBlankCell(v)).map(v => String(v).trim()))].join(", "); }
+
+function buildFinalReportRows(base, product, chosen, closedBy, closedAtIso) {
+  const out = [];
+  ROUND_LABELS.forEach(label => {
+    const rows = chosen.filter(r => r["Shift / Sample"] === label)
+      .sort((a, b) => String(a.Date || "").localeCompare(String(b.Date || "")) || a.__row - b.__row);
+    if (!rows.length) return;
+    const dates = [...new Set(rows.map(r => r.Date).filter(Boolean))];
+    const line = FINAL_HEADERS.map(h => {
+      if (h === "Date") return dates.length > 1 ? `${dates[0]} to ${dates[dates.length - 1]}` : (dates[0] || "");
+      if (h === "Product") return product;
+      if (h === "Batch No.") return base;
+      if (h === "Shift / Sample") return label;
+      if (h === "Operator" || h === "Device ID" || h === "Supervisor") return uniqJoin(rows.map(r => r[h]));
+      if (h === "Finalised At") return [...rows.map(r => r[h]).filter(Boolean)].pop() || "";
+      if (h === "O.D. Spec" || h === "I.D. Spec") return [...rows.map(r => r[h]).filter(v => !isBlankCell(v))].pop() || "";
+      if (h === "Days Worked") return dates.length;
+      if (h === "Work Dates") return dates.join(", ");
+      if (h === "Closed By") return closedBy;
+      if (h === "Closed At") return closedAtIso;
+      if (h === "Invoice No." || h === "Invoice Entered By" || h === "Invoice Entered At") return "";
+      if (h === "Pressure Testing Photo (P120)" || h === "Fitting Load Test Photo (P120)" || h === "Air Leakage Photo (P120)") {
+        // photo-only checks: keep the "No Run" marker if every day was No Run, otherwise blank
+        const v = rows.map(r => r[h]).filter(x => !isBlankCell(x));
+        return (v.length && v.every(x => String(x).trim() === "No Run")) ? "No Run" : "";
+      }
+      if (isPhotoHeader(h) || h === "Braiding Photos") return "";
+      return aggregateReading(rows.map(r => r[h]).filter(v => !isBlankCell(v)));
+    });
+    out.push(line);
+  });
+  return out;
+}
+
+async function sheetApi(body) {
+  const res = await fetch("/api/submit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = (data && data.error && (data.error.error?.message || data.error)) || "Sheet request failed";
+    throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+  }
+  return data;
+}
+async function readTab(title, query) {
+  const res = await fetch(`/api/log?sheet=${encodeURIComponent(title)}${query || ""}`, { cache: "no-store" });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error("Couldn't read the " + title + " tab");
+  return data; // { headers, rows, total }
+}
+// Creates the tab if missing, makes sure it has enough columns, and writes the header row once.
+async function ensureTab(title, headers) {
+  const made = await sheetApi({ mode: "createSheet", title });
+  const meta = await sheetApi({ mode: "meta" });
+  const props = (meta.sheets || []).find(p => p.title === title);
+  const cols = props && props.gridProperties && props.gridProperties.columnCount;
+  if (props && cols && cols < headers.length) await sheetApi({ mode: "grow", sheetId: props.sheetId, addColumns: headers.length - cols });
+  let hdr = [];
+  try { hdr = (await readTab(title)).headers || []; } catch (e) { hdr = []; }
+  if (!hdr.length) await sheetApi({ mode: "update", range: `${quoteTab(title)}!A1:${colLetter(headers.length)}1`, rows: [headers] });
+  return made;
+}
+
+let closingBusy = false;
+function showBusy(msg) {
+  let el = document.getElementById("busy-note");
+  if (!el) { el = document.createElement("div"); el.id = "busy-note"; el.style.cssText = "position:fixed;left:12px;right:12px;bottom:16px;background:#1e293b;color:#fff;padding:12px 14px;border-radius:10px;font-size:13px;z-index:9999;text-align:center;"; document.body.appendChild(el); }
+  el.textContent = msg;
+}
+function hideBusy() { const el = document.getElementById("busy-note"); if (el && el.parentNode) el.parentNode.removeChild(el); }
+
+async function closeBatchFlow(base, closedBy) {
+  // 1. Fresh read of Sheet1 — never trust a cached copy for something that deletes rows.
+  const res = await fetch("/api/log", { cache: "no-store" });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error("Couldn't read the Sheet. Check your connection and try again.");
+  const { all, chosen } = batchRowsFromSheet(data.rows || [], base);
+  if (!all.length) throw new Error("No rows found for this batch in Sheet1 (it may already be closed).");
+  const product = all[0].Product;
+  if (!(await ensureProductKnown(product))) throw new Error(`This device doesn't know product "${product}". Refresh the page and try again.`);
+  const issues = closeBlockers(chosen, product);
+  if (issues.length) {
+    const e = new Error("This batch can't be closed yet:\n\n• " + issues.slice(0, 8).join("\n• ") + (issues.length > 8 ? `\n…and ${issues.length - 8} more` : "") + "\n\nEvery shift on every day must be finalised and fully verified.");
+    e.userFacing = true; throw e;
+  }
+  const closedAt = new Date().toISOString();
+  const finalRows = buildFinalReportRows(base, product, chosen, closedBy, closedAt);
+
+  // 2. Write the two new tabs (idempotent if a previous attempt got part-way).
+  showBusy("Closing batch… preparing tabs");
+  await ensureTab(FINAL_TAB, FINAL_HEADERS);
+  await ensureTab(ARCHIVE_TAB, SHEET_HEADERS);
+
+  showBusy("Closing batch… saving final report");
+  const existingFinal = (await readTab(FINAL_TAB)).rows.filter(r => r["Batch No."] === base);
+  if (existingFinal.length && existingFinal.length !== finalRows.length) throw new Error("The Final Reports tab already has a different set of rows for this batch. Ask the admin to check it before closing again.");
+  if (!existingFinal.length) await sheetApi({ rows: finalRows, range: `${quoteTab(FINAL_TAB)}!A1` });
+
+  showBusy("Closing batch… archiving daily rows");
+  const archived = (await readTab(ARCHIVE_TAB)).rows.filter(r => parseBatchNo(r["Batch No."] || "").base === base);
+  if (archived.length && archived.length !== all.length) throw new Error("The Closed Batches tab already holds part of this batch. Ask the admin to check it before closing again.");
+  if (!archived.length) {
+    const archiveRows = all.slice().sort((a, b) => a.__row - b.__row).map(r => SHEET_HEADERS.map(h => (r[h] === undefined || r[h] === null) ? "" : String(r[h])));
+    await sheetApi({ rows: archiveRows, range: `${quoteTab(ARCHIVE_TAB)}!A1` });
+  }
+
+  // 3. Read both back; only continue if the counts are exactly right.
+  showBusy("Closing batch… checking copies");
+  const finalBack   = (await readTab(FINAL_TAB)).rows.filter(r => r["Batch No."] === base).length;
+  const archiveBack = (await readTab(ARCHIVE_TAB)).rows.filter(r => parseBatchNo(r["Batch No."] || "").base === base).length;
+  if (finalBack !== finalRows.length || archiveBack !== all.length) {
+    throw new Error(`Copy check failed (final ${finalBack}/${finalRows.length}, archive ${archiveBack}/${all.length}). Nothing was removed from Sheet1.`);
+  }
+
+  // 4. Remove the daily rows from Sheet1 — re-read first so row numbers are current, and the
+  // server refuses the whole delete if any row no longer holds the expected Batch No.
+  showBusy("Closing batch… removing from Sheet1");
+  const res2 = await fetch("/api/log", { cache: "no-store" });
+  const data2 = await res2.json().catch(() => ({}));
+  if (!res2.ok) throw new Error("Couldn't re-read Sheet1 before removing rows. The report is saved; try Close Batch again.");
+  const nowRows = batchRowsFromSheet(data2.rows || [], base).all;
+  if (nowRows.length !== all.length) throw new Error("Sheet1 changed while closing (row count differs). The report is saved; try Close Batch again.");
+  await sheetApi({ mode: "deleteRows", rows: nowRows.map(r => ({ row: r.__row, batchNo: r["Batch No."] })) });
+  return { shifts: finalRows.length, rows: all.length };
+}
+
+async function closeBatchClicked() {
+  if (closingBusy) return;
+  const base = S.selectedBatch;
+  if (!base) { alert("Select a batch from the list first."); return; }
+  const name = document.getElementById("s-op").value;
+  const pin  = document.getElementById("s-pin").value;
+  if (!name) { alert("Please select who's using this device (Prepared By)."); return; }
+  if (name !== ADMIN_NAME) { alert("Only Admin (" + ADMIN_NAME + ") can close a batch."); return; }
+  if (!pin) { alert("Please enter your PIN."); return; }
+  if (!(await verifyDevicePin(name, pin))) return;
+  if (!confirm(`Close batch ${base}?\n\nAll days will be merged into one averaged final report and moved out of the working sheet. It will then wait for an invoice number.`)) return;
+  closingBusy = true;
+  try {
+    const r = await closeBatchFlow(base, name);
+    hideBusy();
+    S.selectedBatch = "";
+    alert(`Batch ${base} is closed.\n\n${r.shifts} shift${r.shifts === 1 ? "" : "s"} averaged · ${r.rows} daily row${r.rows === 1 ? "" : "s"} archived.\nEnter its invoice number under "Closed — awaiting invoice".`);
+  } catch (e) {
+    hideBusy();
+    console.error("closeBatch failed:", e);
+    alert(e.userFacing ? e.message : "Couldn't close the batch: " + (e && e.message ? e.message : e));
+  } finally {
+    closingBusy = false;
+    refreshSheetBatches();
+  }
+}
+
+// ── Closed / finished lists on the home screen ──
+function closedBatchGroups() {
+  const groups = {};
+  (S.closedRows || []).forEach(r => {
+    const b = r["Batch No."]; if (!b) return;
+    (groups[b] = groups[b] || []).push(r);
+  });
+  Object.values(groups).forEach(list => list.sort((a, b) => ROUND_LABELS.indexOf(a["Shift / Sample"]) - ROUND_LABELS.indexOf(b["Shift / Sample"])));
+  return groups;
+}
+function groupInvoice(rows) { const r = rows.find(x => !isBlankCell(x["Invoice No."])); return r ? String(r["Invoice No."]) : ""; }
+
+function closedBatchesHtml() {
+  const groups = closedBatchGroups();
+  const bases = Object.keys(groups).sort((a, b) => String(groups[b][0]["Closed At"] || "").localeCompare(String(groups[a][0]["Closed At"] || "")));
+  if (!bases.length) return "";
+  const card = (b, finished) => {
+    const rows = groups[b], f = rows[0];
+    const inv = groupInvoice(rows);
+    const label = (PRODUCTS[f.Product] && PRODUCTS[f.Product].label) || f.Product || "";
+    const closedOn = (f["Closed At"] || "").slice(0, 10);
+    return `<div style="border:1.5px solid ${finished ? "#bbf7d0" : "#fed7aa"};border-radius:12px;padding:10px 12px;margin-bottom:8px;background:${finished ? "#f0fdf4" : "#fff7ed"};">
+      <div style="display:flex;justify-content:space-between;gap:8px;"><div style="font-weight:700;font-size:14px;">${label}</div><div style="font-size:11px;color:#64748b;">${b}</div></div>
+      <div style="font-size:12px;color:#64748b;margin-top:2px;">${f["Days Worked"] || "?"} day(s) · closed ${closedOn} by ${f["Closed By"] || "—"}</div>
+      <div style="margin-top:6px;font-size:12px;font-weight:700;color:${finished ? "#15803d" : "#c2410c"};">${finished ? "Invoice " + inv + " · PDIR ready" : "Invoice number missing"}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
+        ${finished
+          ? `<button class="btn-outline" style="width:auto;flex:1;margin:0;padding:9px 6px;font-size:12px;" onclick="openFinalSheet('${esc(b)}')">📄 View final sheet</button>
+             <button class="btn-outline" style="width:auto;flex:1;margin:0;padding:9px 6px;font-size:12px;" onclick="invoiceClicked('${esc(b)}')">✎ Edit invoice (Admin)</button>`
+          : `<button class="btn-primary" style="width:auto;flex:1.4;margin:0;padding:9px 6px;font-size:12px;" onclick="invoiceClicked('${esc(b)}')">Enter invoice number</button>
+             <button class="btn-outline" style="width:auto;flex:1;margin:0;padding:9px 6px;font-size:12px;" onclick="openFinalSheet('${esc(b)}')">📄 View final sheet</button>`}
+      </div></div>`;
+  };
+  const waiting  = bases.filter(b => !groupInvoice(groups[b]));
+  const finished = bases.filter(b => groupInvoice(groups[b]));
+  return `
+    ${waiting.length ? `<div class="card">
+      <div style="font-weight:700;font-size:15px;margin-bottom:4px;">🧾 Closed — awaiting invoice</div>
+      <div style="font-size:12px;color:#64748b;margin-bottom:10px;">Enter the invoice number (Prepared By + PIN above) to move a batch to Finished. Admin or any verifier can enter it.</div>
+      ${waiting.map(b => card(b, false)).join("")}
+    </div>` : ""}
+    ${finished.length ? `<div class="card">
+      <div style="font-weight:700;font-size:15px;margin-bottom:8px;">✅ Finished batches</div>
+      ${finished.map(b => card(b, true)).join("")}
+    </div>` : ""}`;
+}
+
+async function invoiceClicked(base) {
+  const name = document.getElementById("s-op").value;
+  const pin  = document.getElementById("s-pin").value;
+  if (!name) { alert("Please select who's using this device (Prepared By)."); return; }
+  if (!pin)  { alert("Please enter your PIN."); return; }
+  if (!(await verifyDevicePin(name, pin))) return;
+  try {
+    const data = await readTab(FINAL_TAB);
+    const rows = (data.rows || []).filter(r => r["Batch No."] === base);
+    if (!rows.length) { alert("This batch wasn't found in Final Reports."); return; }
+    const existing = groupInvoice(rows);
+    if (existing && name !== ADMIN_NAME) { alert(`An invoice number (${existing}) is already entered. Only Admin can change it.`); return; }
+    const entered = prompt(existing ? `Current invoice number: ${existing}\n\nNew invoice number for ${base}:` : `Invoice number for ${base}:`, existing || "");
+    if (entered === null) return;
+    const inv = entered.trim();
+    if (!inv) { alert("Invoice number can't be blank."); return; }
+    if (inv.length > 40) { alert("Invoice number is too long (40 characters max)."); return; }
+    if (inv === existing) return;
+    const c0 = FINAL_HEADERS.indexOf("Invoice No.");
+    const stamp = new Date().toISOString();
+    showBusy("Saving invoice number…");
+    for (const r of rows) {
+      await sheetApi({ mode: "update", range: `${quoteTab(FINAL_TAB)}!${colLetter(c0 + 1)}${r.__row}:${colLetter(c0 + 3)}${r.__row}`, rows: [[inv, name, stamp]] });
+    }
+    hideBusy();
+    alert(`Invoice ${inv} saved for ${base}.`);
+  } catch (e) {
+    hideBusy();
+    alert("Couldn't save the invoice number: " + (e && e.message ? e.message : e));
+  } finally {
+    refreshSheetBatches();
+  }
+}
+
+// ── Final sheet screen (read-only, printable) ──
+function openFinalSheet(base) { S.finalSheetBase = base; S.screen = "finalsheet"; render(); }
+function rFinalSheet() {
+  const rows = (closedBatchGroups()[S.finalSheetBase]) || [];
+  const back = `<button class="btn-outline no-print" onclick="S.screen='setup';render()">← Back</button>`;
+  if (!rows.length) return `<div class="header"><h1>📄 Final report</h1></div>${back}<div class="alert">Final report not found — go back and refresh.</div>`;
+  const f = rows[0];
+  const product = PRODUCTS[f.Product];
+  const procs = product ? buildProcesses(f.Product) : [];
+  const byShift = {}; rows.forEach(r => { byShift[r["Shift / Sample"]] = r; });
+  const shifts = ROUND_LABELS.filter(l => byShift[l]);
+  const cell = v => (v === null || v === undefined || v === "") ? "—" : v;
+  const lines = [];
+  procs.forEach(proc => {
+    if (proc.type === "braiding") {
+      const n = product.braiding.machines;
+      for (let i = 1; i <= n; i++) {
+        const col = `BR-${String(i).padStart(2, "0")} O.D.`;
+        if (!shifts.some(s => !isBlankCell(byShift[s][col]))) continue;
+        lines.push(`<tr><td class="l">P${proc.no} ${col}</td>${shifts.map(s => `<td>${cell(byShift[s][col])}</td>`).join("")}</tr>`);
+      }
+      return;
+    }
+    proc.checks.forEach(c => {
+      lines.push(`<tr><td class="l">P${proc.no} ${c.key}</td>${shifts.map(s => `<td>${cell(vrSheetValue(byShift[s], proc.no, c.key))}</td>`).join("")}</tr>`);
+    });
+  });
+  const inv = groupInvoice(rows);
+  return `<div class="header"><h1>📄 Final inspection report</h1><p>${f.Product} · ${S.finalSheetBase}</p></div>
+    <div class="card">
+      <div style="font-size:13px;line-height:1.7;">
+        <b>Days worked:</b> ${f["Days Worked"] || "—"} (${f["Work Dates"] || "—"})<br>
+        <b>Closed:</b> ${(f["Closed At"] || "").slice(0, 10)} by ${f["Closed By"] || "—"}<br>
+        <b>Invoice:</b> ${inv || "<span style='color:#c2410c'>not entered yet</span>"}
+      </div>
+      <div style="font-size:11px;color:#64748b;margin:8px 0;">Measured values are the average of the days that shift ran, shown as "average (days run/days worked)". Pass/fail checks show OK counts.</div>
+      <div style="overflow-x:auto;"><table class="final-tbl" style="width:100%;border-collapse:collapse;font-size:11px;">
+        <tr><th style="text-align:left;">Check</th>${shifts.map(s => `<th>${s}</th>`).join("")}</tr>
+        ${lines.join("")}
+      </table></div>
+      <style>.final-tbl th,.final-tbl td{border:1px solid #e2e8f0;padding:5px 4px;text-align:center;} .final-tbl td.l{text-align:left;font-weight:600;background:#f8fafc;} .final-tbl th{background:#f1f5f9;}</style>
+    </div>
+    <button class="btn-primary no-print" onclick="window.print()">🖨 Print</button>
+    ${back}`;
+}
+
 
 // Builds one full Block-A row (all SHEET_DATA_COLS columns, in the exact SHEET_HEADERS
 // order above) from a round's entries. Shared by buildSheetRows() (all rounds, unwindowed,

@@ -10,7 +10,7 @@ module.exports = async function handler(req, res) {
     if (!sheetId) throw new Error('Missing GOOGLE_SHEET_ID env var');
 
     const body = req.body || {};
-    const mode = ['update', 'meta', 'grow', 'createSheet', 'rename'].includes(body.mode) ? body.mode : 'append';
+    const mode = ['update', 'meta', 'grow', 'createSheet', 'rename', 'deleteRows'].includes(body.mode) ? body.mode : 'append';
     const token = await getAccessToken();
 
     // ── meta: fetch sheet properties (sheetId/title/columnCount) ──
@@ -93,6 +93,56 @@ module.exports = async function handler(req, res) {
       const apiData = await apiRes.json();
       if (!apiRes.ok) { res.status(apiRes.status).json({ error: apiData }); return; }
       res.status(200).json({ success: true, result: apiData });
+      return;
+    }
+
+    // ── deleteRows: remove specific rows from a tab (used ONLY when a closed batch's daily
+    // rows are moved out of Sheet1 into the "Closed Batches" tab). Guarded so it can never
+    // delete the wrong thing: every row must be sent together with the Batch No. the caller
+    // expects to find there, and if even ONE row no longer holds that Batch No. (rows shifted,
+    // someone edited the Sheet) nothing is deleted at all. Rows are deleted bottom-up inside a
+    // single batchUpdate so earlier deletions can't shift later ones. The header row can
+    // never be deleted. ──
+    if (mode === 'deleteRows') {
+      const items = Array.isArray(body.rows) ? body.rows : [];
+      if (!items.length) throw new Error('deleteRows requires rows: [{ row, batchNo }]');
+      if (items.length > 200) throw new Error('deleteRows: too many rows in one request');
+      for (const it of items) {
+        if (!it || !Number.isInteger(it.row) || it.row < 2 || !it.batchNo) throw new Error('deleteRows: each item needs row (>=2) and batchNo');
+      }
+      const metaUrl = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}?fields=sheets.properties`;
+      const metaRes = await fetch(metaUrl, { headers: { Authorization: `Bearer ${token}` } });
+      const metaData = await metaRes.json();
+      if (!metaRes.ok) { res.status(metaRes.status).json({ error: metaData }); return; }
+      const sheets = (metaData.sheets || []).map(s => s.properties);
+      const target = body.tab ? sheets.find(p => p.title === body.tab) : sheets.slice().sort((a, b) => a.index - b.index)[0];
+      if (!target) throw new Error('deleteRows: tab not found');
+      const q = "'" + target.title.replace(/'/g, "''") + "'";
+      const hdrRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(q + '!A1:CZ1')}`, { headers: { Authorization: `Bearer ${token}` } });
+      const hdrData = await hdrRes.json();
+      if (!hdrRes.ok) { res.status(hdrRes.status).json({ error: hdrData }); return; }
+      const hdrs = (hdrData.values && hdrData.values[0]) || [];
+      const bi = hdrs.indexOf('Batch No.');
+      if (bi < 0) throw new Error('deleteRows: Batch No. column not found');
+      let col = ''; { let n = bi + 1; while (n > 0) { const r = (n - 1) % 26; col = String.fromCharCode(65 + r) + col; n = Math.floor((n - 1) / 26); } }
+      const ranges = items.map(it => `ranges=${encodeURIComponent(`${q}!${col}${it.row}`)}`).join('&');
+      const chkRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values:batchGet?${ranges}`, { headers: { Authorization: `Bearer ${token}` } });
+      const chkData = await chkRes.json();
+      if (!chkRes.ok) { res.status(chkRes.status).json({ error: chkData }); return; }
+      const found = (chkData.valueRanges || []).map(vr => (vr.values && vr.values[0] && vr.values[0][0]) || '');
+      const bad = items.filter((it, i) => String(found[i]) !== String(it.batchNo));
+      if (bad.length) { res.status(409).json({ error: 'Rows changed since they were read — nothing was deleted.', mismatched: bad.map(b => b.row) }); return; }
+      const requests = items.map(it => it.row).sort((a, b) => b - a).map(r => ({
+        deleteDimension: { range: { sheetId: target.sheetId, dimension: 'ROWS', startIndex: r - 1, endIndex: r } }
+      }));
+      const delRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}:batchUpdate`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requests })
+      });
+      const delData = await delRes.json();
+      if (!delRes.ok) { res.status(delRes.status).json({ error: delData }); return; }
+      res.status(200).json({ success: true, deleted: items.length });
       return;
     }
 
