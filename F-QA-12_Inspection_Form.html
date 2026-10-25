@@ -3230,8 +3230,9 @@ function recordBand(key, result, label) {
   const existing = curEntries()[key] || {};
   curEntries()[key] = { ...existing, result, label, time: nowTime(), fromSheet: false };
   if (key === pkey("090","Length")) {
-    if (result === "NO_RUN") applyLengthNoRunCascade();
-    else revertLengthNoRunCascade();
+    // No automatic cascade any more: each process (and each check) is marked No Run on its
+    // own with "No Run — Didn't Run Today". Only undo leftovers from an older auto-fill.
+    if (result !== "NO_RUN") revertLengthNoRunCascade();
   }
   render();   // saves the chosen value locally BEFORE the camera can open
   maybeOpenCamera(key);
@@ -3383,7 +3384,6 @@ function markProcessNoRun() {
   }
   // Bulk-marking Part Off (090) No Run this way means the same "nothing downstream
   // happened either" logic applies as when Length alone is marked No Run.
-  if (proc.no === "090") { applyLengthNoRunCascade(); render(); return; }
   render();
   navNext();
 }
