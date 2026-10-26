@@ -4459,6 +4459,26 @@ function buildGaugeCols() {
   return ["Pressure Testing", "Fitting Load Test", "Air Leakage"].map(k => (rd.entries[pkey("120", k)] || {}).label || "");
 }
 
+// Which Sheet row did an append just create? Google's append reply carries the range under
+// updates.updatedRange (the server passes that through both nested in `result` and at the top
+// level as `updates`); the older code only looked at result.updatedRange, which an append reply
+// never has — so the new row's number was lost, the Block C write went to "CBnull", and a
+// second save of the same shift appended a duplicate row. Read every place it can be, and if
+// the reply still doesn't say, look the row up by batch + shift + date.
+async function rowFromAppend(data, batchNo, shift, date) {
+  const cands = [
+    data && data.updates && data.updates.updatedRange,
+    data && data.result && data.result.updates && data.result.updates.updatedRange,
+    data && data.result && data.result.updatedRange
+  ];
+  for (const c of cands) {
+    const m = c && String(c).match(/![A-Z]+(\d+)/);
+    if (m) return parseInt(m[1], 10);
+  }
+  const ex = await findExistingRow(batchNo, shift, date);
+  return ex && ex.__row ? ex.__row : null;
+}
+
 // Silent, non-blocking checkpoint to the Sheet — fired when the camera is about to open (and
 // again once a photo finishes uploading). Mobile Chrome can kill this tab while the camera
 // app is in front; if the phone also wipes the tab's local storage, everything since the
@@ -4504,8 +4524,8 @@ function silentCheckpoint() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error("silent checkpoint failed");
       if (!rowNum) {
-        const m = (data.result && data.result.updatedRange || "").match(/![A-Z]+(\d+)/);
-        if (m) { rowNum = parseInt(m[1], 10); S.dayRowNum = rowNum; }
+        rowNum = await rowFromAppend(data, batchNo, ROUND_LABELS[roundIdx], date);
+        if (rowNum) S.dayRowNum = rowNum;
       }
       if (rowNum) {
         registerBatchDay(base, {
@@ -4574,10 +4594,10 @@ async function submitToSheet(isRetry) {
         const msg = (data && data.error && (data.error.error?.message || data.error)) || "Submit failed";
         throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
       }
-      const updatedRange = data.result && data.result.updatedRange;
-      const m = updatedRange && updatedRange.match(/![A-Z]+(\d+)/);
-      if (m) { rowNum = parseInt(m[1], 10); S.dayRowNum = rowNum; }
+      rowNum = await rowFromAppend(data, S.batchNo, ROUND_LABELS[S.currentRound], S.date);
+      if (rowNum) S.dayRowNum = rowNum;
     }
+    if (!rowNum) throw new Error("The row was saved but its position couldn't be confirmed. Tap Retry.");
 
     // Persist the row number + resume point into the registry for this round so a later
     // same-day save (or a same-day re-open) can find and update the same row.
