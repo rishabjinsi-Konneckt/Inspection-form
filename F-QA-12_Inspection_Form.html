@@ -1528,8 +1528,9 @@ function buildProcesses(pk) {
           type:"pf_manual", passLabel:"Within Std.  ✓", failLabel:"Out of Std.  ✗", unit:"mm", photo:true },
         { key:"Pressure Testing",  spec:`${gPress.min}–${gPress.max} bar`, method:"Hydropneumatic M/c",
           type:"gauge", unit:"bar", min:gPress.min, max:gPress.max, photo:true },
-        { key:"Fitting Load Test", spec:`${gLoad.min}–${gLoad.max} kgf`, method:"Tensile Machine",
-          type:"gauge", unit:"kgf", min:gLoad.min, max:gLoad.max, photo:true },
+        // Fitting load only has a minimum: 40 kgf or more passes, with no upper limit.
+        { key:"Fitting Load Test", spec:`≥ ${gLoad.min} kgf`, method:"Tensile Machine",
+          type:"gauge", unit:"kgf", min:gLoad.min, max:null, photo:true },
         { key:"Air Leakage", spec:"< 5 bar", method:"Line Testing Machine",
           type:"gauge", unit:"bar", min:null, max:5, maxExclusive:true, photo:true }
       ]
