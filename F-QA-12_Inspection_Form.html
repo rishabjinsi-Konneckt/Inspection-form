@@ -4174,44 +4174,54 @@ function rFinalSheet() {
   const chip = (k, v, c) => `<div class="fr-chip" style="border-top:3px solid ${c};"><div class="fr-k">${k}</div><div class="fr-v">${v}</div></div>`;
   return `
   <div class="fr-root${dense}">
-    <div class="fr-banner">
-      <img class="fr-logo" src="${KONNECKT_LOGO}" alt="Konneckt Hoses">
-      <div class="fr-title"><div class="fr-t1">FINAL INSPECTION REPORT</div><div class="fr-t2">Averaged across all days worked · ready for Pre-Dispatch Inspection</div></div>
-      <table class="fr-fmt">
-        <tr><td>Fmt. No.</td><td>F-QA-12</td><td>Rev. No.</td><td>01</td></tr>
-        <tr><td>Org. Date</td><td>01.04.19</td><td>Eff. Date</td><td>01.09.2026</td></tr>
-        <tr><td>Doc. Ref.</td><td colspan="3">${S.finalSheetBase}</td></tr>
-      </table>
-    </div>
-    <div class="fr-chips">
-      ${chip("Product", f.Product, "#dc2626")}
-      ${chip("Batch No.", S.finalSheetBase, "#2563eb")}
-      ${chip("Days worked", `${f["Days Worked"] || "—"} · ${dateText}`, "#0d9488")}
-      ${chip("Shifts covered", shifts.length + " of " + ROUND_LABELS.length, "#7c3aed")}
-      ${chip("Closed", `${frDate((f["Closed At"] || "").slice(0, 10))} · ${f["Closed By"] || "—"}`, "#d97706")}
-      ${chip("Invoice no.", inv || "<span style='color:#c2410c'>not entered</span>", "#16a34a")}
-    </div>
     <table class="fr-tbl">
-      <thead><tr><th class="fr-l">Check</th>${shifts.map(sh => `<th>${sh}</th>`).join("")}</tr></thead>
-      <tbody>${body.join("")}</tbody>
+      <thead>
+        <tr><td class="fr-bare" colspan="${shifts.length + 1}">
+          <div class="fr-banner">
+            <img class="fr-logo" src="${KONNECKT_LOGO}" alt="Konneckt Hoses">
+            <div class="fr-title"><div class="fr-t1">FINAL INSPECTION REPORT</div><div class="fr-t2">Averaged across all days worked · ready for Pre-Dispatch Inspection</div></div>
+            <table class="fr-fmt">
+              <tr><td>Fmt. No.</td><td>F-QA-12</td><td>Rev. No.</td><td>01</td></tr>
+              <tr><td>Org. Date</td><td>01.04.19</td><td>Eff. Date</td><td>01.09.2026</td></tr>
+              <tr><td>Doc. Ref.</td><td colspan="3">${S.finalSheetBase}</td></tr>
+            </table>
+          </div>
+        </td></tr>
+        <tr><th class="fr-l">Check</th>${shifts.map(sh => `<th>${sh}</th>`).join("")}</tr>
+      </thead>
+      <tbody>
+        <tr><td class="fr-bare" colspan="${shifts.length + 1}">
+          <div class="fr-chips">
+            ${chip("Product", f.Product, "#dc2626")}
+            ${chip("Batch No.", S.finalSheetBase, "#2563eb")}
+            ${chip("Days worked", `${f["Days Worked"] || "—"} · ${dateText}`, "#0d9488")}
+            ${chip("Shifts covered", shifts.length + " of " + ROUND_LABELS.length, "#7c3aed")}
+            ${chip("Closed", `${frDate((f["Closed At"] || "").slice(0, 10))} · ${f["Closed By"] || "—"}`, "#d97706")}
+            ${chip("Invoice no.", inv || "<span style='color:#c2410c'>not entered</span>", "#16a34a")}
+          </div>
+        </td></tr>
+        ${body.join("")}
+        <tr><td class="fr-bare" colspan="${shifts.length + 1}">
+          <div class="fr-legend">
+            Measured values: <b>average (days run / days worked)</b> · pass/fail checks: <b>OK count</b> ·
+            <span class="fr-sw fr-ok">all OK</span> <span class="fr-sw fr-ng">any NG</span> <span class="fr-sw fr-nr">No Run</span>
+          </div>
+          <div class="fr-sign">
+            <div><span>Prepared by (QA)</span></div><div><span>Verified by</span></div><div><span>Approved by</span></div>
+          </div>
+        </td></tr>
+      </tbody>
     </table>
-    <div class="fr-legend">
-      Measured values: <b>average (days run / days worked)</b> · pass/fail checks: <b>OK count</b> ·
-      <span class="fr-sw fr-ok">all OK</span> <span class="fr-sw fr-ng">any NG</span> <span class="fr-sw fr-nr">No Run</span>
-    </div>
-    <div class="fr-sign">
-      <div><span>Prepared by (QA)</span></div><div><span>Verified by</span></div><div><span>Approved by</span></div>
-    </div>
     <style>
       .fr-root{font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#0f172a;page:finalreport;}
-      .fr-banner{display:flex;align-items:center;gap:14px;background:linear-gradient(100deg,#b91c1c,#dc2626 55%,#ef4444);color:#fff;border-radius:14px;padding:12px 16px;}
-      .fr-logo{width:62px;height:62px;border-radius:12px;border:2px solid #fff;flex:none;}
+      .fr-banner{display:flex;align-items:center;gap:14px;background:#f8d4d4;color:#7f1d1d;border-radius:14px;padding:12px 16px;text-align:left;}
+      .fr-logo{width:62px;height:62px;border-radius:12px;flex:none;}
       .fr-title{flex:1;min-width:0;}
-      .fr-t1{font-size:22px;font-weight:800;letter-spacing:1.5px;}
-      .fr-t2{font-size:11px;opacity:.9;margin-top:2px;}
-      .fr-fmt{border-collapse:collapse;font-size:10px;background:rgba(255,255,255,.14);border-radius:8px;}
-      .fr-fmt td{border:1px solid rgba(255,255,255,.45);padding:3px 7px;white-space:nowrap;}
-      .fr-fmt td:nth-child(odd){opacity:.85;}
+      .fr-t1{font-size:22px;font-weight:800;letter-spacing:1.5px;color:#7f1d1d;}
+      .fr-t2{font-size:11px;color:#991b1b;margin-top:2px;}
+      .fr-fmt{border-collapse:collapse;font-size:10px;background:#fff;color:#7f1d1d;}
+      .fr-tbl .fr-fmt td{border:1px solid #e9a9a9;padding:3px 7px;white-space:nowrap;text-align:left;background:#fff;font-size:10px;line-height:1.3;}
+      .fr-tbl .fr-fmt td:nth-child(odd){font-weight:600;background:#fdf0f0;}
       .fr-chips{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin:10px 0;}
       .fr-chip{background:#f8fafc;border-radius:8px;padding:6px 9px;}
       .fr-k{font-size:9px;text-transform:uppercase;letter-spacing:.6px;color:#64748b;}
@@ -4220,6 +4230,8 @@ function rFinalSheet() {
       .fr-tbl th{background:#1e293b;color:#fff;padding:6px 4px;font-weight:600;font-size:12px;border:1px solid #1e293b;}
       .fr-tbl td{border:1px solid #e2e8f0;padding:3px 4px;text-align:center;background:#fff;}
       .fr-tbl tr{page-break-inside:avoid;break-inside:avoid;}
+      .fr-tbl td.fr-bare{border:none;padding:0;background:transparent;text-align:left;}
+      .fr-tbl thead td.fr-bare{padding-bottom:6px;}
       .fr-tbl .fr-l{text-align:left;width:19%;font-weight:700;font-size:14px;}
       .fr-tbl th.fr-l{background:#0f172a;}
       .fr-tbl td.fr-l{background:#f8fafc;}
@@ -4240,12 +4252,14 @@ function rFinalSheet() {
       @media print{
         .fr-root{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
         .fr-tbl thead{display:table-header-group;}
-        .fr-tbl{font-size:9.5pt;} .fr-tbl th{font-size:10pt;padding:2.5px 3px;} .fr-tbl td{padding:1.5px 3px;line-height:1.2;}
+        .fr-tbl{font-size:9.5pt;} .fr-tbl th{font-size:10pt;padding:2px 3px;} .fr-tbl td{padding:1px 3px;line-height:1.1;}
         .fr-tbl td.fr-l{font-size:11pt;font-weight:700;} .fr-tbl th.fr-l{font-size:11pt;}
-        .fr-proc td{font-size:11pt;padding:1.5px 6px;}
-        .fr-banner{padding:7px 12px;border-radius:10px;} .fr-logo{width:46px;height:46px;} .fr-t1{font-size:17pt;}
-        .fr-chips{margin:6px 0;gap:6px;} .fr-chip{padding:3px 7px;} .fr-v{font-size:9pt;} .fr-k{font-size:6.5pt;}
-        .fr-legend{font-size:7pt;margin:4px 0;} .fr-sign{margin-top:8px;} .fr-sign div{height:34px;}
+        .fr-proc td{font-size:11pt;padding:1px 6px;}
+        .fr-banner{padding:5px 10px;border-radius:10px;gap:10px;} .fr-logo{width:40px;height:40px;} .fr-t1{font-size:15pt;} .fr-t2{font-size:8pt;}
+        .fr-tbl .fr-fmt td{font-size:7.5pt;padding:1.5px 5px;line-height:1.2;}
+        .fr-tbl thead td.fr-bare{padding-bottom:3px;}
+        .fr-chips{margin:4px 0;gap:6px;} .fr-chip{padding:3px 7px;} .fr-v{font-size:9pt;} .fr-k{font-size:6.5pt;}
+        .fr-legend{font-size:7pt;margin:4px 0;} .fr-sign{margin-top:6px;margin-bottom:14px;} .fr-sign div{height:30px;}
         .fr-dense .fr-tbl{font-size:8pt;} .fr-dense .fr-tbl td.fr-l{font-size:9.5pt;} .fr-dense .fr-proc td{font-size:9.5pt;} .fr-dense .fr-tbl td{padding:.8px 3px;}
       }
       @media (max-width:760px){.fr-chips{grid-template-columns:repeat(2,minmax(0,1fr));} .fr-banner{flex-wrap:wrap;} .fr-tbl{font-size:10px;}}
