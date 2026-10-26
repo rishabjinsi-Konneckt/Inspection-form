@@ -3741,9 +3741,14 @@ function buildFinalReportRows(base, product, chosen, closedBy, closedAtIso) {
       if (h === "Closed At") return closedAtIso;
       if (h === "Invoice No." || h === "Invoice Entered By" || h === "Invoice Entered At") return "";
       if (h === "Pressure Testing Photo (P120)" || h === "Fitting Load Test Photo (P120)" || h === "Air Leakage Photo (P120)") {
-        // photo-only checks: keep the "No Run" marker if every day was No Run, otherwise blank
+        // Photo-only checks: the Sheet stores no reading for these, only the photo (or "No Run"),
+        // so the final sheet shows how many days have photo evidence.
         const v = rows.map(r => r[h]).filter(x => !isBlankCell(x));
-        return (v.length && v.every(x => String(x).trim() === "No Run")) ? "No Run" : "";
+        if (!v.length) return "";
+        const photos = v.filter(x => /^https?:/i.test(String(x).trim())).length;
+        const nr = v.filter(x => String(x).trim() === "No Run").length;
+        if (!photos && nr === v.length) return "No Run";
+        return `Photo ${photos}/${rows.length}` + (nr ? ` · No Run ${nr}` : "");
       }
       if (isPhotoHeader(h) || h === "Braiding Photos") return "";
       return aggregateReading(rows.map(r => r[h]).filter(v => !isBlankCell(v)));
@@ -3976,7 +3981,8 @@ function rFinalSheet() {
       return;
     }
     proc.checks.forEach(c => {
-      lines.push(`<tr><td class="l">P${proc.no} ${c.key}</td>${shifts.map(s => `<td>${cell(vrSheetValue(byShift[s], proc.no, c.key))}</td>`).join("")}</tr>`);
+      const photoOnly = proc.no === "120" ? ({ "Pressure Testing":"Pressure Testing Photo (P120)", "Fitting Load Test":"Fitting Load Test Photo (P120)", "Air Leakage":"Air Leakage Photo (P120)" })[c.key] : null;
+      lines.push(`<tr><td class="l">P${proc.no} ${c.key}</td>${shifts.map(s => `<td>${cell(photoOnly ? byShift[s][photoOnly] : vrSheetValue(byShift[s], proc.no, c.key))}</td>`).join("")}</tr>`);
     });
   });
   const inv = groupInvoice(rows);
