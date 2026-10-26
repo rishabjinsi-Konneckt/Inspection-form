@@ -2725,7 +2725,7 @@ function rSetup() {
       <button class="btn-outline" style="background:#f1f5f9;color:#334155;border-color:#94a3b8;" onclick="closeBatchClicked()">🔒 Close Batch — Admin only</button>
     </div>` : (S.sheetBatchRegLoading ? `<div style="text-align:center;font-size:12px;color:#94a3b8;margin-top:4px;">Checking for batches from other devices…</div>` : "")}
     ${closedBatchesHtml()}
-    <div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:4px;">F-QA-12 Rev.01 · Eff. 01.04.19</div>`;
+    <div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:4px;">F-QA-12 Rev.01 · Eff. 01.09.2026</div>`;
 }
 
 // Buttons call these instead of startInspection()/continueBatch() directly — PIN check
@@ -4178,8 +4178,8 @@ function rFinalSheet() {
       <img class="fr-logo" src="${KONNECKT_LOGO}" alt="Konneckt Hoses">
       <div class="fr-title"><div class="fr-t1">FINAL INSPECTION REPORT</div><div class="fr-t2">Averaged across all days worked · ready for Pre-Dispatch Inspection</div></div>
       <table class="fr-fmt">
-        <tr><td>Fmt. No.</td><td>F-QA-12</td><td>Rev. No.</td><td>00</td></tr>
-        <tr><td>Org. Date</td><td>01.04.19</td><td>Eff. Date</td><td>01.04.19</td></tr>
+        <tr><td>Fmt. No.</td><td>F-QA-12</td><td>Rev. No.</td><td>01</td></tr>
+        <tr><td>Org. Date</td><td>01.04.19</td><td>Eff. Date</td><td>01.09.2026</td></tr>
         <tr><td>Doc. Ref.</td><td colspan="3">${S.finalSheetBase}</td></tr>
       </table>
     </div>
@@ -4236,6 +4236,7 @@ function rFinalSheet() {
       .fr-sign span{position:absolute;bottom:-15px;left:0;font-size:10px;color:#64748b;}
       .fr-sign{margin-bottom:22px;}
       @page finalreport{size:A4 landscape;margin:7mm;}
+      @page{size:A4 landscape;margin:7mm;}   /* this style block only exists while the final report is on screen, so other screens still print as before */
       @media print{
         .fr-root{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
         .fr-tbl thead{display:table-header-group;}
@@ -4711,7 +4712,7 @@ function rReport() {
     ${submitHtml}
     <div class="card">
       <div style="font-size:16px;font-weight:800;color:#1e3a5f;">INPROCESS INSPECTION REPORT</div>
-      <div style="font-size:11px;color:#94a3b8;margin-bottom:14px;">Fmt. No.: F-QA-12 · Rev.01 · Eff. Date: 01.04.19</div>
+      <div style="font-size:11px;color:#94a3b8;margin-bottom:14px;">Fmt. No.: F-QA-12 · Rev.01 · Eff. Date: 01.09.2026</div>
       <div class="report-meta">
         <div class="meta-item"><div class="meta-lbl">Product</div><div class="meta-val">${PRODUCTS[S.product].label}</div></div>
         <div class="meta-item"><div class="meta-lbl">Batch No.</div><div class="meta-val">${S.batchNo||"—"}</div></div>
@@ -5138,7 +5139,7 @@ function rBatchReport() {
     </div>
     <div class="card">
       <div style="font-size:16px;font-weight:800;color:#1e3a5f;">INPROCESS INSPECTION REPORT</div>
-      <div style="font-size:11px;color:#94a3b8;margin-bottom:14px;">Fmt. No.: F-QA-12 · Rev.01 · Eff. Date: 01.04.19</div>
+      <div style="font-size:11px;color:#94a3b8;margin-bottom:14px;">Fmt. No.: F-QA-12 · Rev.01 · Eff. Date: 01.09.2026</div>
       <div class="report-meta">
         <div class="meta-item"><div class="meta-lbl">Product</div><div class="meta-val">${esc(first.Product)}</div></div>
         <div class="meta-item"><div class="meta-lbl">Batch No.</div><div class="meta-val">${esc(first["Batch No."]||base)}</div></div>
@@ -5820,7 +5821,7 @@ function boot() {
         <button class="btn-primary" onclick="resumeSession(window.__resumeData)">Resume Inspection \u2192</button>
         <button class="btn-outline" onclick="discardSession()">Discard &amp; Start Fresh</button>
       </div>
-      <div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:4px;">F-QA-12 Rev.01 \u00b7 Eff. 01.04.19</div>`;
+      <div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:4px;">F-QA-12 Rev.01 \u00b7 Eff. 01.09.2026</div>`;
   } else if (stateLoadCorrupted) {
     // This device had SOMETHING saved but it couldn't be read back \u2014 don't silently land on
     // a blank Setup screen as if nothing had happened (see loadState()). The Sheet itself is
