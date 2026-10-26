@@ -24,13 +24,28 @@ const PROMPT =
   '{"readable": true or false, "reading": number or null, "confidence": "high" or "medium" or "low", ' +
   '"image_quality": "sharp" or "soft" or "blurry"}';
 
+// Test-machine / gauge photos (Process 120: Pressure Testing in bar, Fitting Load Test in kgf,
+// Air Leakage in bar): read the main number on the display. The unit is only ever one of the
+// known ones so nothing from the request is pasted into the prompt unchecked.
+const GAUGE_UNITS = ['bar', 'kgf', 'mm'];
+function gaugePrompt(unit) {
+  return 'This photo shows a testing machine or gauge with a digital display. Read the main number ' +
+    'shown on the display. The expected unit is ' + unit + '. If the digits are blurry, glared, cut off, ' +
+    'covered, or no display is visible, do NOT guess: set readable to false and reading to null. Also ' +
+    'give unit_on_display exactly as printed next to the number (for example "bar", "kgf", "kg", "psi", "N"), ' +
+    'or "" if no unit is visible, and rate image_quality of the digits: "sharp" = every digit crisp; ' +
+    '"soft" = legible but fuzzy; "blurry" = smeared, doubled or ambiguous. Reply with ONLY a JSON object, ' +
+    'no other text: {"readable": true or false, "reading": number or null, "confidence": "high" or ' +
+    '"medium" or "low", "unit_on_display": string, "image_quality": "sharp" or "soft" or "blurry"}';
+}
+
 async function withTimeout(ms, fn) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
   try { return await fn(controller.signal); } finally { clearTimeout(timer); }
 }
 
-async function askGemini(apiKey, imageUrl) {
+async function askGemini(apiKey, imageUrl, prompt) {
   const model = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
   // Gemini takes the image bytes inline, so fetch them from Cloudinary first.
   const imgRes = await withTimeout(15000, (signal) => fetch(imageUrl, { signal }));
@@ -47,7 +62,7 @@ async function askGemini(apiKey, imageUrl) {
       body: JSON.stringify({
         contents: [{ parts: [
           { inline_data: { mime_type: mime, data: b64 } },
-          { text: PROMPT }
+          { text: prompt }
         ] }],
         generationConfig: { temperature: 0, responseMimeType: 'application/json' }
       })
@@ -59,7 +74,7 @@ async function askGemini(apiKey, imageUrl) {
   return parts.map(p => p.text || '').join('');
 }
 
-async function askAnthropic(apiKey, imageUrl) {
+async function askAnthropic(apiKey, imageUrl, prompt) {
   const model = process.env.ANTHROPIC_MODEL || 'claude-sonnet-5-5';
   const apiRes = await withTimeout(25000, (signal) => fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -70,7 +85,7 @@ async function askAnthropic(apiKey, imageUrl) {
       max_tokens: 120,
       messages: [{ role: 'user', content: [
         { type: 'image', source: { type: 'url', url: imageUrl } },
-        { type: 'text', text: PROMPT }
+        { type: 'text', text: prompt }
       ] }]
     })
   }));
@@ -96,9 +111,14 @@ module.exports = async function handler(req, res) {
       return;
     }
 
+    const kind = String((req.body && req.body.kind) || 'caliper');
+    const unit = String((req.body && req.body.unit) || '');
+    const isGauge = kind === 'gauge' && GAUGE_UNITS.includes(unit);
+    const prompt = isGauge ? gaugePrompt(unit) : PROMPT;
+
     let text;
     try {
-      text = geminiKey ? await askGemini(geminiKey, imageUrl) : await askAnthropic(anthropicKey, imageUrl);
+      text = geminiKey ? await askGemini(geminiKey, imageUrl, prompt) : await askAnthropic(anthropicKey, imageUrl, prompt);
     } catch (e) {
       res.status(502).json({ error: e.message || 'Vision model request failed' });
       return;
@@ -112,7 +132,9 @@ module.exports = async function handler(req, res) {
     // Anything short of "sharp" is treated as unreadable so the app cautions "blurry - retake".
     const readable = parsed.readable === true && reading !== null && parsed.image_quality === 'sharp';
     const confidence = ['high', 'medium', 'low'].includes(parsed.confidence) ? parsed.confidence : 'low';
-    res.status(200).json({ readable, reading, confidence, engine: geminiKey ? 'gemini' : 'anthropic' });
+    const out = { readable, reading, confidence, engine: geminiKey ? 'gemini' : 'anthropic' };
+    if (isGauge) out.unit_on_display = typeof parsed.unit_on_display === 'string' ? parsed.unit_on_display.slice(0, 12) : '';
+    res.status(200).json(out);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

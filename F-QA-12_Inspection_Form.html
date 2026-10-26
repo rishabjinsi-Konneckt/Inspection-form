@@ -155,6 +155,13 @@ select:focus, input[type="date"]:focus { border-color: #2563eb; }
 .b-na   { background: #f1f5f9; color: #64748b; }
 .b-stale { background: #fef3c7; color: #92400e; }
 .photo-note      { margin-top: 8px; font-size: 12px; color: #64748b; }
+.gauge-row{display:flex;gap:8px;margin:8px 0;align-items:stretch;}
+.gauge-cam{flex:1;padding:12px 10px;border-radius:10px;border:2px solid #2563eb;background:#eff6ff;color:#1d4ed8;font-weight:700;font-size:14px;}
+.gauge-hint{font-size:12px;color:#64748b;margin:4px 0;}
+.gauge-result{font-size:13px;font-weight:700;margin:6px 0;padding:8px 10px;border-radius:8px;}
+.gauge-result.gr-pass{background:#f0fdf4;color:#15803d;}
+.gauge-result.gr-fail{background:#fef2f2;color:#b91c1c;}
+.gauge-change{float:right;font-weight:600;font-size:12px;text-decoration:underline;cursor:pointer;color:#475569;}
 .photo-note-warn { background: #fffbeb; border: 1px solid #fcd34d; color: #92400e; border-radius: 8px;
                    padding: 8px 10px; font-weight: 700; }
 
@@ -1394,8 +1401,20 @@ const SELF_VERIFY_EXEMPT = "Rishab (Admin)";
 // ═══════════════════════════════════════════════
 // PROCESS LIBRARY
 // ═══════════════════════════════════════════════
+// Pass limits for a Process 120 gauge check, taken from the product's PASS bands (so a
+// product with different limits in the Products tab keeps working). Falls back to the
+// standard limits if the product has no bands.
+function gaugeLimits(bands, fallback) {
+  let lo = Infinity, hi = -Infinity;
+  (bands || []).filter(b => b.r === "PASS").forEach(b => {
+    (String(b.label).match(/\d+(?:\.\d+)?/g) || []).forEach(x => { lo = Math.min(lo, +x); hi = Math.max(hi, +x); });
+  });
+  return isFinite(lo) && isFinite(hi) ? { min: lo, max: hi } : fallback;
+}
 function buildProcesses(pk) {
   const p = PRODUCTS[pk];
+  const gPress = gaugeLimits(p.crimping && p.crimping.pressBands, { min: 15, max: 30 });
+  const gLoad  = gaugeLimits(p.crimping && p.crimping.loadBands,  { min: 40, max: 60 });
   const lib = {
     "030": {
       no:"030", machine:"Mixing Mill", name:"Material Mixing",
@@ -1507,13 +1526,12 @@ function buildProcesses(pk) {
       checks:[
         { key:"Crimp O.D.", spec:"Per standard", method:"Vernier Caliper",
           type:"pf_manual", passLabel:"Within Std.  ✓", failLabel:"Out of Std.  ✗", unit:"mm", photo:true },
-        { key:"Pressure Testing",  spec:"15–30 Kgf", method:"Hydropneumatic M/c",
-          type:"bands", bands: p.crimping ? p.crimping.pressBands : [], photo:true },
-        { key:"Fitting Load Test", spec:"40–60 Kgf", method:"Tensile Machine",
-          type:"bands", bands: p.crimping ? p.crimping.loadBands : [], photo:true },
-        { key:"Air Leakage", spec:"< 5 Kgf", method:"Line Testing Machine",
-          type:"pf_sub", failLabel:"≥ 5 Kgf  ✗  FAIL",
-          passRanges:["0–1","1–2","2–3","3–4","4–5"], photo:true }
+        { key:"Pressure Testing",  spec:`${gPress.min}–${gPress.max} bar`, method:"Hydropneumatic M/c",
+          type:"gauge", unit:"bar", min:gPress.min, max:gPress.max, photo:true },
+        { key:"Fitting Load Test", spec:`${gLoad.min}–${gLoad.max} kgf`, method:"Tensile Machine",
+          type:"gauge", unit:"kgf", min:gLoad.min, max:gLoad.max, photo:true },
+        { key:"Air Leakage", spec:"< 5 bar", method:"Line Testing Machine",
+          type:"gauge", unit:"bar", min:null, max:5, maxExclusive:true, photo:true }
       ]
     },
     "130": {
@@ -1737,7 +1755,8 @@ async function handlePhotoSelect(key, inputEl) {
   silentCheckpoint(); // push the finished photo URL to the Sheet too (background, not awaited)
   // Caliper checks only: have the photo's number compared with the selection (advisory).
   const chk = findCheckByKey(key);
-  if (uploaded && chk && chk.method === "Vernier Caliper") checkPhotoReading("entries", key);
+  if (uploaded && chk && chk.type === "gauge") readGaugePhoto(key);
+  else if (uploaded && chk && chk.method === "Vernier Caliper") checkPhotoReading("entries", key);
 }
 
 async function handleBraidPhotoSelect(m, inputEl) {
@@ -1808,6 +1827,13 @@ function photoReadNote(e) {
   }
   const r = e.photoRead;
   if (!r || r.pending) return "";
+  if (typeof e.value === "number" || e.gaugeUnit) {
+    // Gauge photo (Process 120): the number comes from the photo itself.
+    if (!r.readable || r.confidence === "low") return "⚠ Couldn't read the number on the photo — retake it, or type the number";
+    if (r.unitSeen && e.gaugeUnit && !gaugeUnitMatches(r.unitSeen, e.gaugeUnit)) return `⚠ Display shows "${r.unitSeen}" — expected ${e.gaugeUnit}. Check the photo`;
+    if (typeof e.value === "number" && Math.abs(r.reading - e.value) > 0.05) return `⚠ Photo reads ${r.reading}, you entered ${e.value} — retake or correct`;
+    return "";
+  }
   if (!r.readable || r.confidence === "low") return "⚠ Photo is blurry or unclear — retake";
   const range = parseSelectedRange(e.label);
   if (!range) return "";
@@ -2003,6 +2029,7 @@ function isCheckDone(chk, key) {
   if (!e.result) return false;
   if (chk.type === "pf_sub" && !e.label) return false;
   if (chk.type === "manual" && !e.label) return false;
+  if (chk.type === "gauge" && !(typeof e.value === "number" || e.fromSheet)) return false;
   if (chk.type === "pf_manual" && !(e.result==="FAIL" || e.label)) return false;
   return photoSatisfied(chk, e);
 }
@@ -2387,6 +2414,7 @@ function hydrateRoundFromSheetRows(roundIdx, rows, productKey) {
         if (val) {
           const k = pkey(p.no, c.key);
           rd.entries[k] = { result: inferResultFromLabel(val), label: val === "No Run" ? "" : val, time: row.Date || "", fromSheet: true };
+          if (c.type === "gauge" && val !== "No Run") { const n = parseFloat(val); if (isFinite(n)) { rd.entries[k].value = n; rd.entries[k].gaugeUnit = c.unit; } }
         }
       });
     });
@@ -3052,6 +3080,37 @@ function rChecks(proc) {
           <button class="manual-confirm" onclick="recordManual('${key}')">✓ Save</button>
         </div>`;
 
+    } else if (c.type === "gauge") {
+      const canNoRunGauge = S.batchDay > 1 || approvalClearedThruProcess(proc.no);
+      const noRunG = e?.result === "NO_RUN";
+      const inputId = `gauge_${key}`.replace(/[^a-zA-Z0-9_]/g, "_");
+      const pr = e?.photoRead;
+      const hasVal = typeof e?.value === "number";
+      let hint = "";
+      if (e?.photoStatus === "uploading") hint = "Uploading the photo…";
+      else if (pr && pr.pending) hint = "Reading the number from the photo…";
+      else if (hasVal && e.source === "ai") hint = `Read from the photo: ${e.value} ${c.unit}. Correct it below if it's wrong.`;
+      else if (e?.photo && !hasVal) hint = "Type the number shown on the display, then tap Save.";
+      else if (!e?.photo) hint = "Take a clear photo of the display. The number is read from it.";
+      body = `
+        <div class="gauge-row">
+          <button class="gauge-cam" onclick="openGaugeCamera('${key}')">📷 ${e?.photo ? "Retake photo" : "Take photo of the display"}</button>
+          ${canNoRunGauge ? `<button class="band-btn ${noRunG ? "b-norun-on" : "b-norun-opt"}" style="flex:0 0 auto;"
+              onclick="recordBand('${key}','NO_RUN','No Run')">⊘ No Run</button>` : ""}
+        </div>
+        ${noRunG ? "" : `
+        <div class="manual-row">
+          <input id="${inputId}" class="manual-input" type="number" step="0.01" inputmode="decimal"
+            placeholder="Reading" value="${hasVal ? e.value : ""}"
+            onkeydown="if(event.key==='Enter')recordGauge('${key}')"/>
+          <span class="manual-unit">${c.unit}</span>
+          <button class="manual-confirm" onclick="recordGauge('${key}')">✓ Save</button>
+        </div>
+        <div class="gauge-hint">${hint}</div>
+        ${hasVal && e.result ? `<div class="gauge-result ${e.result === "PASS" ? "gr-pass" : "gr-fail"}">
+            ${e.result === "PASS" ? "✓ Within limits" : "✗ Outside limits"} (${c.spec})${e.override ? " · changed by operator" : ""}
+            <span class="gauge-change" onclick="toggleGaugeResult('${key}')">change result</span></div>` : ""}`}`;
+
     } else if (c.type === "bands") {
       // Same rule as the process-level "Mark whole process No Run" button — see
       // approvalClearedThruProcess() — so a brand-new day-1 batch can't skip a reading that
@@ -3088,7 +3147,7 @@ function rChecks(proc) {
         ${body}
         ${complete ? `<div class="check-rec"><span>${e.label}</span><span style="color:#94a3b8">${e.time}</span></div>` : ""}
         ${photoHtml}
-        ${c.method === "Vernier Caliper" ? photoNoteHtml(e) : ""}
+        ${(c.method === "Vernier Caliper" || c.type === "gauge") ? photoNoteHtml(e) : ""}
       </div>`;
   }).join("");
 }
@@ -3248,6 +3307,87 @@ function recordBand(key, result, label) {
   }
   render();   // saves the chosen value locally BEFORE the camera can open
   maybeOpenCamera(key);
+}
+
+// ── Process 120 gauge checks: number read from the photo, confirmed/edited by the operator ──
+function gaugeUnitMatches(seen, expected) {
+  const norm = u => { u = String(u || "").toLowerCase().replace(/[^a-z]/g, ""); return u === "kg" || u === "kgs" || u === "kgf" ? "kgf" : u; };
+  return norm(seen) === norm(expected);
+}
+function gaugeJudge(chk, v) {
+  if (chk.min !== null && chk.min !== undefined && v < chk.min - 1e-9) return "FAIL";
+  if (chk.max !== null && chk.max !== undefined) {
+    if (chk.maxExclusive ? v >= chk.max - 1e-9 : v > chk.max + 1e-9) return "FAIL";
+  }
+  return "PASS";
+}
+function gaugeLabel(chk, v, result, override) {
+  return `${+Number(v).toFixed(2)} ${chk.unit}` + (result === "FAIL" ? " ✗ FAIL" : "") + (override ? " (override)" : "");
+}
+function applyGaugeValue(key, v, source) {
+  const chk = findCheckByKey(key); if (!chk) return;
+  const existing = curEntries()[key] || {};
+  const result = gaugeJudge(chk, v);
+  curEntries()[key] = { ...existing, value: +Number(v).toFixed(2), source, gaugeUnit: chk.unit, override: false,
+    result, label: gaugeLabel(chk, v, result, false), time: nowTime(), fromSheet: false };
+}
+function openGaugeCamera(key) {
+  const inp = document.getElementById(`photo_${key}`.replace(/[^a-zA-Z0-9_]/g, "_"));
+  if (!inp) return;
+  const e = curEntries()[key] || {}; e.camAsked = true; curEntries()[key] = e;
+  saveState(); silentCheckpoint();
+  inp.click();
+}
+function recordGauge(key) {
+  const inp = document.getElementById(`gauge_${key}`.replace(/[^a-zA-Z0-9_]/g, "_"));
+  const raw = inp ? String(inp.value).trim() : "";
+  const v = parseFloat(raw);
+  if (!raw || !isFinite(v) || v < 0) { alert("Enter the number shown on the display."); return; }
+  const e = curEntries()[key] || {};
+  const same = e.photoRead && e.photoRead.readable && Math.abs(e.photoRead.reading - v) < 0.005;
+  applyGaugeValue(key, v, same ? "ai" : "typed");
+  render();
+  maybeOpenCamera(key);   // photo is compulsory — opens once if none is attached yet
+}
+function toggleGaugeResult(key) {
+  const chk = findCheckByKey(key); const e = curEntries()[key];
+  if (!chk || !e || typeof e.value !== "number") return;
+  const to = e.result === "PASS" ? "FAIL" : "PASS";
+  if (!confirm(`Change this result to ${to}? It will be recorded as changed by the operator.`)) return;
+  e.result = to; e.override = to !== gaugeJudge(chk, e.value);
+  e.label = gaugeLabel(chk, e.value, to, e.override);
+  render();
+}
+async function readGaugePhoto(key) {
+  const chk = findCheckByKey(key);
+  const e = curEntries()[key];
+  if (!chk || !e || !e.photo) return;
+  const url = e.photo;
+  e.photoRead = { pending: true };
+  render();
+  try {
+    const res = await fetch("/api/readcaliper", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ imageUrl: url, kind: "gauge", unit: chk.unit })
+    });
+    const data = await res.json();
+    const cur = curEntries()[key];
+    if (!cur || cur.photo !== url) return;              // retaken meanwhile — drop it
+    if (res.ok && typeof data.readable === "boolean") {
+      cur.photoRead = { readable: data.readable, reading: data.reading, confidence: data.confidence, unitSeen: data.unit_on_display || "" };
+      cur.gaugeUnit = chk.unit;
+      const usable = data.readable && typeof data.reading === "number" && data.confidence !== "low";
+      // Don't overwrite something the operator typed themselves unless the photo agrees with it.
+      if (usable && !(cur.source === "typed" && typeof cur.value === "number")) applyGaugeValue(key, data.reading, "ai");
+    } else {
+      delete cur.photoRead;                             // service unavailable — the operator types it
+    }
+  } catch (err) {
+    const cur = curEntries()[key];
+    if (cur && cur.photoRead && cur.photoRead.pending) delete cur.photoRead;
+  }
+  render();
+  silentCheckpoint();
 }
 
 // If Part Off (090) Length is No Run, the hose was never cut this round, which means
@@ -3616,8 +3756,12 @@ const SHEET_HEADERS = [
   // Block B) would shift every column after the insertion point, which requires physically
   // moving every existing row's data in the live Sheet, not just adding a column. Appending
   // past Block B needs no such migration: it's pure growth, nothing existing moves. ──
-  "Last Saved At"
+  "Last Saved At",
+  // ── Block C continued: Process 120 gauge readings (number read from the photo + unit) ──
+  "Pressure Testing (P120)","Fitting Load Test (P120)","Air Leakage (P120)"
 ];
+const GAUGE_COLS = ["Pressure Testing (P120)","Fitting Load Test (P120)","Air Leakage (P120)"];
+const GAUGE_COL_BY_CHECK = { "Pressure Testing":"Pressure Testing (P120)", "Fitting Load Test":"Fitting Load Test (P120)", "Air Leakage":"Air Leakage (P120)" };
 // Number of columns in Block A (the operator's single atomic write). Everything from here
 // to the end of SHEET_HEADERS is Block B (Verify Reports' single atomic write).
 const SHEET_DATA_COLS = 75;
@@ -3629,6 +3773,8 @@ function colLetter(n) { // 1-indexed column number -> spreadsheet letter(s)
   return s;
 }
 const LAST_SAVED_COL = colLetter(SHEET_HEADERS.indexOf(LAST_SAVED_COL_NAME) + 1);
+// Block C = Last Saved At + the three gauge readings, written together in one range.
+const BLOCK_C_END_COL = colLetter(SHEET_HEADERS.indexOf(LAST_SAVED_COL_NAME) + 1 + GAUGE_COLS.length);
 
 // ═══════════════════════════════════════════════
 // CLOSE BATCH → FINAL REPORT (groundwork for the PDIR)
@@ -3644,7 +3790,8 @@ const FINAL_TAB   = "Final Reports";
 const ARCHIVE_TAB = "Closed Batches";
 const ADMIN_NAME  = SELF_VERIFY_EXEMPT; // "Rishab (Admin)"
 const FINAL_EXTRA_HEADERS = ["Days Worked","Work Dates","Closed By","Closed At","Invoice No.","Invoice Entered By","Invoice Entered At"];
-const FINAL_HEADERS = [...SHEET_HEADERS.slice(0, SHEET_DATA_COLS), ...FINAL_EXTRA_HEADERS];
+// Gauge columns go AFTER the extras so tabs created before they existed only need columns appended.
+const FINAL_HEADERS = [...SHEET_HEADERS.slice(0, SHEET_DATA_COLS), ...FINAL_EXTRA_HEADERS, ...GAUGE_COLS];
 
 function quoteTab(t) { return "'" + String(t).replace(/'/g, "''") + "'"; }
 function isBlankCell(v) { return v === undefined || v === null || String(v).trim() === ""; }
@@ -3661,8 +3808,9 @@ function parseReadingNumber(v) {
   if (m) return { n: (parseFloat(m[1]) + parseFloat(m[2])) / 2, dec: Math.max(dec(m[1]), dec(m[2])), fail: !!m[3] };
   m = s.match(new RegExp("^[<>≤≥]\\s*" + num + "(?:\\s*(FAIL|✗))?$", "i"));
   if (m) return { n: parseFloat(m[1]), dec: dec(m[1]), fail: true };
-  m = s.match(new RegExp("^" + num + "$"));
-  if (m) return { n: parseFloat(m[1]), dec: dec(m[1]), fail: false };
+  // plain number, optionally with a unit and the FAIL / override markers written by gauge checks
+  m = s.match(new RegExp("^" + num + "\\s*(?:bar|kgf|kg|psi|mm)?\\s*(✗\\s*FAIL|FAIL|✗)?\\s*(?:\\(override\\))?$", "i"));
+  if (m) return { n: parseFloat(m[1]), dec: dec(m[1]), fail: !!m[2] };
   return null;
 }
 
@@ -3783,6 +3931,10 @@ async function ensureTab(title, headers) {
   let hdr = [];
   try { hdr = (await readTab(title)).headers || []; } catch (e) { hdr = []; }
   if (!hdr.length) await sheetApi({ mode: "update", range: `${quoteTab(title)}!A1:${colLetter(headers.length)}1`, rows: [headers] });
+  else if (hdr.length < headers.length && hdr.every((h, i) => h === headers[i])) {
+    // Tab made by an older version: append only the newer header cells (nothing existing moves).
+    await sheetApi({ mode: "update", range: `${quoteTab(title)}!${colLetter(hdr.length + 1)}1:${colLetter(headers.length)}1`, rows: [headers.slice(hdr.length)] });
+  }
   return made;
 }
 
@@ -3982,7 +4134,7 @@ function rFinalSheet() {
     }
     proc.checks.forEach(c => {
       const photoOnly = proc.no === "120" ? ({ "Pressure Testing":"Pressure Testing Photo (P120)", "Fitting Load Test":"Fitting Load Test Photo (P120)", "Air Leakage":"Air Leakage Photo (P120)" })[c.key] : null;
-      lines.push(`<tr><td class="l">P${proc.no} ${c.key}</td>${shifts.map(s => `<td>${cell(photoOnly ? byShift[s][photoOnly] : vrSheetValue(byShift[s], proc.no, c.key))}</td>`).join("")}</tr>`);
+      lines.push(`<tr><td class="l">P${proc.no} ${c.key}</td>${shifts.map(s => { const v = vrSheetValue(byShift[s], proc.no, c.key); return `<td>${cell(v || (photoOnly ? byShift[s][photoOnly] : v))}</td>`; }).join("")}</tr>`);
     });
   });
   const inv = groupInvoice(rows);
@@ -4165,13 +4317,33 @@ let lastSavedHeaderEnsured = false;
 async function ensureLastSavedHeader() {
   if (lastSavedHeaderEnsured) return;
   try {
+    // Block C (Last Saved At + the three gauge readings) sits past Block B. Make sure the
+    // first tab's grid is wide enough for it (appending columns never moves existing data),
+    // then write the header cells.
+    const need = SHEET_HEADERS.length;
+    try {
+      const meta = await sheetApi({ mode: "meta" });
+      const first = (meta.sheets || []).slice().sort((a, b) => a.index - b.index)[0];
+      const have = first && first.gridProperties && first.gridProperties.columnCount;
+      if (first && have && have < need) await sheetApi({ mode: "grow", sheetId: first.sheetId, addColumns: need - have });
+    } catch (e) { /* best-effort — the header write below reports its own failure */ }
     await fetch("/api/submit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "update", range: `${LAST_SAVED_COL}1:${LAST_SAVED_COL}1`, rows: [[LAST_SAVED_COL_NAME]] })
+      body: JSON.stringify({ mode: "update", range: `${LAST_SAVED_COL}1:${BLOCK_C_END_COL}1`, rows: [[LAST_SAVED_COL_NAME, ...GAUGE_COLS]] })
     });
   } catch (e) { /* best-effort — see comment above */ }
   finally { lastSavedHeaderEnsured = true; }
+}
+
+// The three Process 120 gauge readings, windowed exactly like Block A (a process already
+// reported earlier the same day is blank, so a later save doesn't re-write it).
+function buildGaugeCols() {
+  const rd = S.roundData[S.currentRound];
+  const procs = buildProcesses(S.product);
+  const idx = procs.findIndex(p => p.no === "120");
+  if (!rd || idx < 0 || idx < (S.reportedThroughIdx || 0)) return ["", "", ""];
+  return ["Pressure Testing", "Fitting Load Test", "Air Leakage"].map(k => (rd.entries[pkey("120", k)] || {}).label || "");
 }
 
 // Silent, non-blocking checkpoint to the Sheet — fired when the camera is about to open (and
@@ -4227,7 +4399,8 @@ function silentCheckpoint() {
           product: S.product, batchLastDay: S.batchDay, batchLastDate: date,
           roundIdx, roundRowNum: rowNum, roundLastDate: date
         });
-        await post({ mode: "update", range: `${LAST_SAVED_COL}${rowNum}:${LAST_SAVED_COL}${rowNum}`, rows: [[new Date().toISOString()]] });
+        await ensureLastSavedHeader();
+        await post({ mode: "update", range: `${LAST_SAVED_COL}${rowNum}:${BLOCK_C_END_COL}${rowNum}`, rows: [[new Date().toISOString(), ...buildGaugeCols()]] });
         saveState();
       }
     } catch (e) {
@@ -4314,10 +4487,11 @@ async function submitToSheet(isRetry) {
     // comment above warns about: it's confirmed before continuing, and same as the main row
     // write above, its failure falls through to this function's existing retry/error path
     // rather than failing silently.
+    await ensureLastSavedHeader(); // makes sure Sheet1 has the Block C columns + headers before writing them
     const lastSavedRes = await fetch("/api/submit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "update", range: `${LAST_SAVED_COL}${rowNum}:${LAST_SAVED_COL}${rowNum}`, rows: [[new Date().toISOString()]] })
+      body: JSON.stringify({ mode: "update", range: `${LAST_SAVED_COL}${rowNum}:${BLOCK_C_END_COL}${rowNum}`, rows: [[new Date().toISOString(), ...buildGaugeCols()]] })
     });
     if (!lastSavedRes.ok) {
       const lastSavedData = await lastSavedRes.json().catch(() => ({}));
@@ -5207,10 +5381,14 @@ function vrSheetValue(row, procNo, checkKey) {
   if (procNo === "100" && checkKey === "Assembly")        return row["Assembly (P100)"] || "";
   if (procNo === "120" && checkKey === "Crimp O.D.")  return row["Crimp O.D. Measured (P120)"] || "";
   if (procNo === "130" && checkKey === "Appearance")      return row["Appearance (P130)"] || "";
-  // Photo-only checks: the only cell is the photo column, which holds "No Run" when skipped.
-  if (procNo === "120" && checkKey === "Pressure Testing")  return row["Pressure Testing Photo (P120)"] === "No Run" ? "No Run" : null;
-  if (procNo === "120" && checkKey === "Fitting Load Test") return row["Fitting Load Test Photo (P120)"] === "No Run" ? "No Run" : null;
-  if (procNo === "120" && checkKey === "Air Leakage")       return row["Air Leakage Photo (P120)"] === "No Run" ? "No Run" : null;
+  // Process 120 gauge checks: the reading itself lives in its own column now (older rows only
+  // have the photo column, which holds "No Run" when skipped).
+  if (procNo === "120" && GAUGE_COL_BY_CHECK[checkKey]) {
+    const v = String(row[GAUGE_COL_BY_CHECK[checkKey]] || "").trim();
+    if (v) return v;
+    const photoCol = { "Pressure Testing":"Pressure Testing Photo (P120)", "Fitting Load Test":"Fitting Load Test Photo (P120)", "Air Leakage":"Air Leakage Photo (P120)" }[checkKey];
+    return row[photoCol] === "No Run" ? "No Run" : null;
+  }
   return null; // not tracked in the sheet schema
 }
 function vrJudge(label) {
