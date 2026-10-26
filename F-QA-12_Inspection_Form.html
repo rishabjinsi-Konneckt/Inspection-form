@@ -1324,6 +1324,7 @@ function parseProductsFromRows(rows) {
         pressBands: buildBands(pressMin, pressMax, pressStep, true),
         loadBands: buildBands(loadMin, loadMax, loadStep, true),
       },
+      tensile: { min: num(row["Tensile Min"], 35), max: num(row["Tensile Max"], 52), step: num(row["Tensile Least Count"], 3) },
       flow,
     };
   }
@@ -1411,10 +1412,22 @@ function gaugeLimits(bands, fallback) {
   });
   return isFinite(lo) && isFinite(hi) ? { min: lo, max: hi } : fallback;
 }
+// Tensile pass ranges from the Products tab (Tensile Min / Max / Least Count), e.g. 35/52/3 ->
+// 35–37, 38–40, … 50–52, > 52.
+function tensileRanges(t) {
+  const min = t.min, max = t.max, step = t.step > 0 ? t.step : 3, out = [];
+  for (let lo = min, g = 0; lo <= max && g < 100; lo += step, g++) {
+    const hi = Math.min(lo + step - 1, max);
+    out.push(lo === hi ? String(lo) : `${lo}–${hi}`);
+  }
+  out.push(`> ${max}`);
+  return out;
+}
 function buildProcesses(pk) {
   const p = PRODUCTS[pk];
   const gPress = gaugeLimits(p.crimping && p.crimping.pressBands, { min: 15, max: 30 });
   const gLoad  = gaugeLimits(p.crimping && p.crimping.loadBands,  { min: 40, max: 60 });
+  const tens = (p.tensile && isFinite(p.tensile.min)) ? p.tensile : { min: 35, max: 52, step: 3 };
   const lib = {
     "030": {
       no:"030", machine:"Mixing Mill", name:"Material Mixing",
@@ -1422,9 +1435,9 @@ function buildProcesses(pk) {
         { key:"Hardness",      spec:"≥ 75",         method:"Hardness Tester",
           type:"pf_sub", failLabel:"< 75  ✗  FAIL",
           passRanges:["75–77","78–80","81–83","84–86","87–90","> 90"] },
-        { key:"Tensile",       spec:"≥ 35",          method:"Tensile Machine",
-          type:"pf_sub", failLabel:"< 35  ✗  FAIL",
-          passRanges:["35–37","38–40","41–43","44–46","47–49","50–52","> 52"] },
+        { key:"Tensile",       spec:`≥ ${tens.min}`,          method:"Tensile Machine",
+          type:"pf_sub", failLabel:`< ${tens.min}  ✗  FAIL`,
+          passRanges:tensileRanges(tens) },
         { key:"Button Weight", spec:"Per standard",  method:"Weighing Scale",
           type:"manual", unit:"g" },
         { key:"TS2",           spec:"1.0–3.0",        method:"ODR",
