@@ -1324,6 +1324,8 @@ function parseProductsFromRows(rows) {
         pressBands: buildBands(pressMin, pressMax, pressStep, true),
         loadBands: buildBands(loadMin, loadMax, loadStep, true),
       },
+      hardness: { min: num(row["Hardness Min"], 75), max: num(row["Hardness Max"], 90), step: num(row["Hardness Least Count"], 3) },
+      gaugeMin: { press: num(row["Pressure Test Min"]), load: num(row["Fitting Load Min"]), leak: num(row["Air Leakage Min"]) },
       tensile: { min: num(row["Tensile Min"], 35), max: num(row["Tensile Max"], 52), step: num(row["Tensile Least Count"], 3) },
       flow,
     };
@@ -1412,29 +1414,34 @@ function gaugeLimits(bands, fallback) {
   });
   return isFinite(lo) && isFinite(hi) ? { min: lo, max: hi } : fallback;
 }
-// Tensile pass ranges from the Products tab (Tensile Min / Max / Least Count), e.g. 35/52/3 ->
+// Tensile / Hardness pass ranges from the Products tab (Tensile Min / Max / Least Count), e.g. 35/52/3 ->
 // 35–37, 38–40, … 50–52, > 52.
 function tensileRanges(t) {
   const min = t.min, max = t.max, step = t.step > 0 ? t.step : 3, out = [];
-  for (let lo = min, g = 0; lo <= max && g < 100; lo += step, g++) {
-    const hi = Math.min(lo + step - 1, max);
+  for (let lo = min, g = 0; lo <= max && g < 100; g++) {
+    let hi = Math.min(lo + step - 1, max);
+    if (max - hi < step - 1 && max - hi > 0) hi = max; // fold a short leftover into the last bucket
     out.push(lo === hi ? String(lo) : `${lo}–${hi}`);
+    lo = hi + 1;
   }
   out.push(`> ${max}`);
   return out;
 }
 function buildProcesses(pk) {
   const p = PRODUCTS[pk];
-  const gPress = gaugeLimits(p.crimping && p.crimping.pressBands, { min: 15, max: 30 });
-  const gLoad  = gaugeLimits(p.crimping && p.crimping.loadBands,  { min: 40, max: 60 });
+  const gm = p.gaugeMin || {};
+  const gPress = isFinite(gm.press) ? { min: gm.press } : gaugeLimits(p.crimping && p.crimping.pressBands, { min: 15, max: 30 });
+  const gLoad  = isFinite(gm.load)  ? { min: gm.load }  : gaugeLimits(p.crimping && p.crimping.loadBands,  { min: 40, max: 60 });
+  const gLeak  = { min: isFinite(gm.leak) ? gm.leak : 5 };
+  const hard = (p.hardness && isFinite(p.hardness.min)) ? p.hardness : { min: 75, max: 90, step: 3 };
   const tens = (p.tensile && isFinite(p.tensile.min)) ? p.tensile : { min: 35, max: 52, step: 3 };
   const lib = {
     "030": {
       no:"030", machine:"Mixing Mill", name:"Material Mixing",
       checks:[
-        { key:"Hardness",      spec:"≥ 75",         method:"Hardness Tester",
-          type:"pf_sub", failLabel:"< 75  ✗  FAIL",
-          passRanges:["75–77","78–80","81–83","84–86","87–90","> 90"] },
+        { key:"Hardness",      spec:`≥ ${hard.min}`,         method:"Hardness Tester",
+          type:"pf_sub", failLabel:`< ${hard.min}  ✗  FAIL`,
+          passRanges:tensileRanges(hard) },
         { key:"Tensile",       spec:`≥ ${tens.min}`,          method:"Tensile Machine",
           type:"pf_sub", failLabel:`< ${tens.min}  ✗  FAIL`,
           passRanges:tensileRanges(tens) },
@@ -1546,8 +1553,8 @@ function buildProcesses(pk) {
         // Fitting load only has a minimum: 40 kgf or more passes, with no upper limit.
         { key:"Fitting Load Test", spec:`≥ ${gLoad.min} kgf`, method:"Tensile Machine",
           type:"gauge", unit:"kgf", min:gLoad.min, max:null, photo:true },
-        { key:"Air Leakage", spec:"≥ 5 bar", method:"Line Testing Machine",
-          type:"gauge", unit:"bar", min:5, max:null, photo:true }
+        { key:"Air Leakage", spec:`≥ ${gLeak.min} bar`, method:"Line Testing Machine",
+          type:"gauge", unit:"bar", min:gLeak.min, max:null, photo:true }
       ]
     },
     "130": {
