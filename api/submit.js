@@ -156,7 +156,7 @@ module.exports = async function handler(req, res) {
     // Unqualified range -> targets the first sheet/tab regardless of its name. A range
     // that includes a "TabName!" prefix targets that tab instead (see PINs tab usage).
     const range = body.range || 'A:Z';
-    let url, fetchOpts;
+    let url, fetchOpts, appendedRange = null;
     if (mode === 'update') {
       url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(range)}?valueInputOption=RAW`;
       fetchOpts = {
@@ -165,18 +165,62 @@ module.exports = async function handler(req, res) {
         body: JSON.stringify({ values: rows })
       };
     } else {
-      url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(range)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`;
+      // ── append: write the new row(s) at an EXPLICIT row, always starting in column A. ──
+      // Google's own :append guesses where "the table" is, and once a stray cell exists outside
+      // it (e.g. a lone "Last Saved At" cell below the data) it starts the row in the wrong
+      // column — that shifted whole shifts 22 columns to the right. Finding the first empty
+      // row in column A ourselves avoids that guessing completely.
+      const authH = { Authorization: `Bearer ${token}` };
+      const bang = range.indexOf('!');
+      let tab = bang > 0 ? range.slice(0, bang).replace(/^'|'$/g, '').replace(/''/g, "'") : null;
+      const metaRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}?fields=sheets.properties`, { headers: authH });
+      const metaData = await metaRes.json();
+      if (!metaRes.ok) { res.status(metaRes.status).json({ error: metaData }); return; }
+      const props = metaData.sheets.map(x => x.properties);
+      const target = tab ? props.find(p => p.title === tab) : props[0];
+      if (!target) throw new Error('Tab not found: ' + tab);
+      tab = target.title;
+      const q = "'" + tab.replace(/'/g, "''") + "'";
+      const colRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(q + '!A:A')}`, { headers: authH });
+      const colData = await colRes.json();
+      if (!colRes.ok) { res.status(colRes.status).json({ error: colData }); return; }
+      let used = (colData.values || []).length;
+      // A stray "Last Saved At" cell below the data (column CB, Sheet1 only) also counts as used,
+      // so a new row never lands on top of it. Ignored on tabs that don't have that column.
+      try {
+        if ((target.gridProperties.columnCount || 0) >= 80) {
+          const cbRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(q + '!CB:CB')}`, { headers: authH });
+          if (cbRes.ok) used = Math.max(used, ((await cbRes.json()).values || []).length);
+        }
+      } catch (e) { /* ignore */ }
+      const firstRow = used + 1;
+      const lastRow = firstRow + rows.length - 1;
+      const need = lastRow - (target.gridProperties.rowCount || 0);
+      if (need > 0) {
+        const gRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}:batchUpdate`, {
+          method: 'POST', headers: { ...authH, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ requests: [{ appendDimension: { sheetId: target.sheetId, dimension: 'ROWS', length: Math.max(need, 100) } }] })
+        });
+        if (!gRes.ok) { res.status(gRes.status).json({ error: await gRes.json() }); return; }
+      }
+      const widest = Math.max(...rows.map(r => r.length), 1);
+      const colLetter = (n) => { let t = ''; while (n > 0) { const m = (n - 1) % 26; t = String.fromCharCode(65 + m) + t; n = Math.floor((n - 1) / 26); } return t; };
+      const writeRange = `${q}!A${firstRow}:${colLetter(widest)}${lastRow}`;
+      url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(writeRange)}?valueInputOption=RAW`;
       fetchOpts = {
-        method: 'POST',
+        method: 'PUT',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ values: rows })
       };
+      appendedRange = `${tab}!A${firstRow}:${colLetter(widest)}${lastRow}`;
     }
 
     const apiRes = await fetch(url, fetchOpts);
     const apiData = await apiRes.json();
     if (!apiRes.ok) { res.status(apiRes.status).json({ error: apiData }); return; }
-    res.status(200).json({ success: true, result: apiData, updates: apiData.updates });
+    // Same reply shape Google's :append used to give ({updates:{updatedRange}}), so callers don't change.
+    const updates = appendedRange ? { updatedRange: appendedRange, updatedRows: rows.length } : apiData.updates;
+    res.status(200).json({ success: true, result: appendedRange ? { updates } : apiData, updates });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
