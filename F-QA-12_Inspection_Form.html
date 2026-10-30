@@ -4721,9 +4721,10 @@ async function rowFromAppend(data, batchNo, shift, date) {
 // autosave, not a replacement for Pause/Review. Same upsert rules as submitToSheet(): the
 // first save of the day appends and remembers the row number, later ones update that row.
 let silentPushPromise = null;
+let silentRerun = false;   // a checkpoint was requested while one was in flight -> run once more when it ends
 function silentCheckpoint() {
   if (S.editSel) return null;                           // editing a submitted shift: nothing is written until resubmit
-  if (silentPushPromise) return silentPushPromise;      // one at a time
+  if (silentPushPromise) { silentRerun = true; return silentPushPromise; }   // one at a time — but remember to run again: the request may carry newer data (e.g. a photo that finished uploading mid-push)
   if (S.screen !== "process" || !S.batchBase) return null;
   if (S.submitStatus === "loading") return null;        // a real submit is already running
   let ok = false;
@@ -4774,6 +4775,7 @@ function silentCheckpoint() {
       console.warn("Silent checkpoint skipped:", e && e.message);
     } finally {
       silentPushPromise = null;
+      if (silentRerun) { silentRerun = false; setTimeout(silentCheckpoint, 0); }
     }
   })();
   return silentPushPromise;
