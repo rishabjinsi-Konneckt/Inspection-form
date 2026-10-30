@@ -2939,12 +2939,23 @@ function continueBatch() {
     // in the Sheet to back it up. A round that's genuinely fresh today (no today's row yet)
     // hydrates nothing and starts blank, same as any other new day.
     const todaysSheetRows = roundInfo.sheetRows.filter(r => r.Date === todayStr);
-    if (todaysSheetRows.length) hydrateRoundFromSheetRows(roundIdx, todaysSheetRows, info.product);
+    if (todaysSheetRows.length) {
+      hydrateRoundFromSheetRows(roundIdx, todaysSheetRows, info.product);
+      // The Sheet row for today gets REWRITTEN in full from these entries on the next save, so
+      // everything already on it has to be carried over: photo links, and the "No Run" text
+      // (hydration leaves a No Run entry's label empty, which would write the cell back blank).
+      const rdH = S.roundData[roundIdx];
+      attachSheetPhotos(rdH, todaysSheetRows[todaysSheetRows.length - 1], info.product);
+      Object.values(rdH.entries).forEach(e => { if (e.result === "NO_RUN") e.label = "No Run"; });
+    }
     const procs = buildProcesses(info.product);
     let resumeIdx = procs.findIndex(p => !isProcDone(p));
     if (resumeIdx < 0) resumeIdx = procs.length - 1;
     S.processIdx = resumeIdx;
-    S.reportedThroughIdx = resumeIdx;
+    // Report from the START (0), not from where this device resumes: the save rewrites today's
+    // whole row, so windowing out the processes before resumeIdx used to BLANK them on the Sheet
+    // (e.g. a shift continued on a second phone lost everything before the resume point).
+    S.reportedThroughIdx = 0;
     const todaysRow = todaysSheetRows[todaysSheetRows.length - 1] || null;
     S.dayRowNum = todaysRow ? todaysRow.__row : null;
   } else if (roundInfo) {
