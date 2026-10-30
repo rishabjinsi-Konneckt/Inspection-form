@@ -2926,6 +2926,14 @@ function continueBatch() {
     S.processIdx = 0;
     S.reportedThroughIdx = 0;
     S.dayRowNum = null;
+    // Clear the earlier day's resume/start/complete values this phone still remembers for the
+    // round. Left as they were, coming back to this shift later the SAME day picked up the old
+    // start point and left out the earlier processes when saving, blanking them on the Sheet.
+    registerBatchDay(base, {
+      product: info.product, batchLastDay: S.batchDay, batchLastDate: todayStr,
+      roundIdx, roundResumeIdx: 0, roundDayStartIdx: 0, roundLastDate: todayStr,
+      roundRowNum: null, roundComplete: false
+    });
   } else if (roundInfo && !roundInfo.knownLocally && roundInfo.sheetRows && roundInfo.sheetRows.length) {
     // This device has never worked on this round — there's no local resume point, but the
     // Sheet already has whatever was captured for it from wherever it WAS worked on. Rebuild
@@ -2963,6 +2971,25 @@ function continueBatch() {
     S.processIdx = roundInfo.resumeIdx || 0;
     S.reportedThroughIdx = roundSameDay ? (roundInfo.dayStartIdx || 0) : (roundInfo.resumeIdx || 0);
     S.dayRowNum = roundSameDay ? (roundInfo.rowNum || null) : null;
+    if (roundSameDay) {
+      // Coming back to a shift worked earlier TODAY. The phone's remembered resume / start
+      // points can be stale (left over from an earlier day), and a wrong start point made the
+      // next save blank every process before it on today's row. Work them out from today's
+      // actual Sheet row and the readings held here instead.
+      const procsR = buildProcesses(info.product);
+      const todaysRows = (roundInfo.sheetRows || []).filter(r => r.Date === todayStr);
+      const todaysRow = todaysRows[todaysRows.length - 1];
+      if (todaysRow) {
+        const firstWithData = procsR.findIndex(p => p.type === "braiding"
+          ? Array.from({ length: PRODUCTS[info.product].braiding.machines }, (_, i) => todaysRow[`BR-${String(i + 1).padStart(2, "0")} O.D.`]).some(Boolean)
+          : p.checks.some(c => vrSheetValue(todaysRow, p.no, c.key)));
+        S.reportedThroughIdx = Math.max(0, firstWithData);
+        S.dayRowNum = todaysRow.__row || S.dayRowNum;
+      }
+      let nd = procsR.findIndex(p => !isProcDone(p));
+      if (nd < 0) nd = procsR.length - 1;
+      S.processIdx = Math.max(nd, S.reportedThroughIdx);
+    }
   } else {
     // fresh round within an existing batch — never touched before
     S.processIdx = 0;
