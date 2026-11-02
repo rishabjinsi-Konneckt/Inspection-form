@@ -1327,6 +1327,8 @@ function parseProductsFromRows(rows) {
       hardness: { min: num(row["Hardness Min"], 75), max: num(row["Hardness Max"], 90), step: num(row["Hardness Least Count"], 3) },
       gaugeMin: { press: num(row["Pressure Test Min"]), load: num(row["Fitting Load Min"]), leak: num(row["Air Leakage Min"]) },
       tensile: { min: num(row["Tensile Min"], 35), max: num(row["Tensile Max"], 52), step: num(row["Tensile Least Count"], 3) },
+      // Base products only (flow ends at P070): reuses allowed per day the base batch has run.
+      baseReuse: num(row["Base Reuse Per Day"], 4),
       flow,
     };
   }
@@ -1427,7 +1429,17 @@ function tensileRanges(t) {
   out.push(`> ${max}`);
   return out;
 }
-function buildProcesses(pk) {
+// While a finished product is running on a REUSED base batch, P030–P070 are not part of its
+// form (they were done on the base batch), so the active inspection's list starts at P080.
+// Only the live inspection screens use this; log / verify views always see the full list.
+const BASE_FILTER_SCREENS = ["process", "review", "editpick", "submitted", "paused"];
+function buildProcesses(pk, baseSrcOverride) {
+  const baseSrc = baseSrcOverride !== undefined ? baseSrcOverride
+    : ((pk === S.product && S.baseSrc && BASE_FILTER_SCREENS.includes(S.screen)) ? S.baseSrc : "");
+  const full = buildProcessesFull(pk);
+  return baseSrc ? full.filter(x => Number(x.no) > 70) : full;
+}
+function buildProcessesFull(pk) {
   const p = PRODUCTS[pk];
   const gm = p.gaugeMin || {};
   const gPress = isFinite(gm.press) ? { min: gm.press } : gaugeLimits(p.crimping && p.crimping.pressBands, { min: 15, max: 30 });
@@ -1938,6 +1950,7 @@ function freshState() {
     supName:"", verified:{}, finalisedAt:"",
     submitStatus:"", submitError:"",
     batchBase:"", batchNo:"", batchDay:1, reportedThroughIdx:0, dayRowNum:null,
+    baseSrc:"", baseOverride:false, baseMode:"", baseSel:"",   // base batch this finished batch reuses (P030–P070 done there)
     editSel:null, editInfo:null,   // editing an already-submitted, not-yet-verified shift (see openEditSubmitted)
     selectedBatch:"", batchSearch:"",
     sheetBatchReg:null, sheetBatchRegLoading:false, sheetBatchRegError:"", closedRows:null, finalSheetBase:"",
@@ -2124,6 +2137,8 @@ function registerBatchDay(base, opts) {
     product:  opts.product,
     lastDay:  opts.batchLastDay,
     lastDate: opts.batchLastDate,
+    baseSrc:  (S.batchBase === base ? (S.baseSrc || "") : (existing.baseSrc || "")),
+    baseOverride: (S.batchBase === base ? !!S.baseOverride : !!existing.baseOverride),
     rounds
   };
   saveBatchRegistry(reg);
@@ -2374,10 +2389,74 @@ function mergedBatchRegistry() {
       // Sheet-only, same as verifiedThru above — the local (per-device) registry never
       // captured this, only the Sheet does, since it's written by submitToSheet() itself.
       lastSavedAt: (s && s.lastSavedAt) || "",
+      // Base batch this finished batch reuses (Sheet's "Base Batch" cell wins, else this device's note).
+      baseSrc: "", baseOverride: false,
       rounds
     };
+    const pc = parseBaseCell(baseCellFromRounds(s && s.rounds));
+    merged[base].baseSrc = pc.src || (l && l.baseSrc) || "";
+    merged[base].baseOverride = pc.src ? pc.override : !!(l && l.baseOverride);
   });
   return merged;
+}
+
+// ═══════════════════════════════════════════════
+// BASE BATCHES — a "base product" (12EN, 13EN, 14EN, 12ES, 13ES, 14ES) runs P030–P070 only.
+// A finished product whose name starts with a base product's code (13ENBN45 → 13EN) can reuse
+// one of its verified base batches instead of running P030–P070 itself. A base batch allows
+// BASE_REUSE_PER_DAY (4) reuses for every day it ran, e.g. Day 3 → 12 finished batches.
+// ═══════════════════════════════════════════════
+const BASE_COL_NAME = "Base Batch";
+function isBaseProduct(code) {
+  const f = PRODUCTS[code] && PRODUCTS[code].flow;
+  return !!(f && f.length && f[f.length - 1] === "070");
+}
+function baseProductOf(code) {
+  if (!PRODUCTS[code] || isBaseProduct(code)) return "";
+  const pre = String(code).slice(0, 4);
+  return (pre !== code && PRODUCTS[pre] && isBaseProduct(pre)) ? pre : "";
+}
+function parseBaseCell(v) {
+  const s = String(v || "").trim();
+  if (!s) return { src: "", override: false };
+  const parts = s.split("|").map(x => x.trim());
+  return { src: parts[0], override: /override/i.test(parts.slice(1).join(" ")) };
+}
+function baseCellFromRounds(rounds) {
+  let out = "";
+  Object.values(rounds || {}).forEach(list => (list || []).forEach(r => { if (r && r[BASE_COL_NAME]) out = r[BASE_COL_NAME]; }));
+  return out;
+}
+function baseCellValue() {
+  return S.baseSrc ? S.baseSrc + (S.baseOverride ? " | Admin override" : "") : "";
+}
+// Block C values for one save: timestamp, three gauge readings, base batch.
+function blockCValues() { return [new Date().toISOString(), ...buildGaugeCols(), baseCellValue()]; }
+
+// Verified base batches that `finishedCode` may reuse, with how many of their allowed uses are
+// taken. Uses = distinct finished batches whose rows name it in the "Base Batch" column.
+function eligibleBaseBatches(finishedCode, reg) {
+  const baseCode = baseProductOf(finishedCode);
+  if (!baseCode) return [];
+  reg = reg || mergedBatchRegistry();
+  const used = {};
+  Object.keys(reg).forEach(b => {
+    const src = reg[b].baseSrc;
+    if (src) (used[src] = used[src] || new Set()).add(b);
+  });
+  const perDay = (PRODUCTS[baseCode] && PRODUCTS[baseCode].baseReuse) || 4;
+  const out = [];
+  Object.keys(reg).forEach(b => {
+    const e = reg[b];
+    if (e.product !== baseCode) return;
+    const r0 = e.rounds && e.rounds[0];
+    if (!(r0 && r0.verifiedThru && Number(r0.verifiedThru) >= 70)) return;   // verified through P070 first
+    const days = Math.max(1, e.lastDay || 1);
+    const allowed = perDay * days;
+    const u = used[b] ? used[b].size : 0;
+    out.push({ key: b, days, used: u, allowed, full: u >= allowed, lastDate: e.lastDate || "" });
+  });
+  return out.sort((a, b) => (b.lastDate || "").localeCompare(a.lastDate || "") || a.key.localeCompare(b.key));
 }
 
 // A round "blocks" starting another shift on this same batch when its most recent row used
@@ -2844,6 +2923,7 @@ function startInspection() {
   }
 
   S.batchBase = finalBase;
+  S.baseSrc = ""; S.baseOverride = false; S.baseMode = ""; S.baseSel = "";
   S.batchDay  = 1;
   S.batchNo   = S.batchBase;
   S.reportedThroughIdx = 0;
@@ -2914,6 +2994,8 @@ function continueBatch() {
   S.batchDay  = batchSameDay ? info.lastDay : info.lastDay + 1;
   S.batchNo   = S.batchDay <= 1 ? base : `${base}-${S.batchDay}`;
   S.currentRound = roundIdx;
+  // A finished batch that reuses a base batch has no P030–P070 of its own (see buildProcesses).
+  S.baseSrc = info.baseSrc || ""; S.baseOverride = !!info.baseOverride; S.baseMode = ""; S.baseSel = "";
 
   if (startingFreshDay) {
     // The previous day's pass at this shift is done and already signed off — this is a new,
@@ -2956,7 +3038,7 @@ function continueBatch() {
       attachSheetPhotos(rdH, todaysSheetRows[todaysSheetRows.length - 1], info.product);
       Object.values(rdH.entries).forEach(e => { if (e.result === "NO_RUN") e.label = "No Run"; });
     }
-    const procs = buildProcesses(info.product);
+    const procs = buildProcesses(info.product, S.baseSrc);
     let resumeIdx = procs.findIndex(p => !isProcDone(p));
     if (resumeIdx < 0) resumeIdx = procs.length - 1;
     S.processIdx = resumeIdx;
@@ -2976,7 +3058,7 @@ function continueBatch() {
       // points can be stale (left over from an earlier day), and a wrong start point made the
       // next save blank every process before it on today's row. Work them out from today's
       // actual Sheet row and the readings held here instead.
-      const procsR = buildProcesses(info.product);
+      const procsR = buildProcesses(info.product, S.baseSrc);
       const todaysRows = (roundInfo.sheetRows || []).filter(r => r.Date === todayStr);
       const todaysRow = todaysRows[todaysRows.length - 1];
       if (todaysRow) {
@@ -3001,7 +3083,7 @@ function continueBatch() {
   // process was already completed, or the product's process list changed since it was saved).
   // Keep it inside the list so the Process screen always has a process to show.
   {
-    const lastIdx = Math.max(0, buildProcesses(S.product).length - 1);
+    const lastIdx = Math.max(0, buildProcesses(S.product, S.baseSrc).length - 1);
     S.processIdx = Math.min(Math.max(parseInt(S.processIdx, 10) || 0, 0), lastIdx);
     S.reportedThroughIdx = Math.min(Math.max(parseInt(S.reportedThroughIdx, 10) || 0, 0), lastIdx);
   }
@@ -3078,6 +3160,7 @@ async function openEditSubmitted(base, info, roundIdx, roundInfo, op) {
   S.product = info.product; S.operator = preparer || op; S.date = date;
   S.batchBase = base; S.batchNo = row["Batch No."]; S.batchDay = parseBatchNo(row["Batch No."]).day || 1;
   S.currentRound = roundIdx; S.shift = ROUND_LABELS[roundIdx];
+  S.baseSrc = info.baseSrc || ""; S.baseOverride = !!info.baseOverride; S.baseMode = ""; S.baseSel = "";
   S.procOperators = {};
   S.roundData[roundIdx] = emptyRound();
   hydrateRoundFromSheetRows(roundIdx, [row], info.product);
@@ -3171,6 +3254,13 @@ function rProcess() {
       : `<div style="font-size:12px;color:#c2410c;background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:8px 12px;margin-bottom:12px;">🔒 Approval Sample hasn't been verified yet today — this shift can't proceed past this point until it is.</div>`;
   })() : "";
 
+  // A finished product that has a base product (13ENBN45 → 13EN) asks, before P030 of a brand-new
+  // batch, whether to run P030–P070 here or reuse a verified base batch (see eligibleBaseBatches).
+  const needBaseChoice = !!baseProductOf(S.product) && !S.baseSrc && S.baseMode !== "run" && proc.no === "030"
+    && S.currentRound === 0 && S.batchDay === 1 && !S.dayRowNum && !editing;
+  if (needBaseChoice) return rBaseChoice(proc);
+  const baseNote = S.baseSrc ? `<div style="font-size:12px;color:#0f766e;background:#f0fdfa;border:1px solid #99f6e4;border-radius:8px;padding:8px 12px;margin-bottom:12px;">🧱 P030–P070 were done on base batch <b>${htmlText(S.baseSrc)}</b>${S.baseOverride ? " (Admin override)" : ""}. This batch starts at Process 080.</div>` : "";
+
   return `
     <div class="header">
       <h1>Process ${proc.no} · ${proc.name}</h1>
@@ -3180,6 +3270,7 @@ function rProcess() {
       <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
       <div class="step-label">Step ${S.processIdx+1} of ${total}</div>
     </div>
+    ${baseNote}
     ${capNote}
     ${editing ? `<div style="font-size:12px;color:#1d4ed8;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:8px 12px;margin-bottom:12px;">✏️ Editing a submitted shift — only the processes you ticked can be changed. Nothing is saved until you resubmit.</div>` : ""}
     <div class="card">
@@ -3211,6 +3302,68 @@ function rProcess() {
     <div style="text-align:center;font-size:11px;color:#94a3b8;margin-top:8px;">
       ${S.savedAt ? `&#10003; Saved on this device automatically &middot; ${new Date(S.savedAt).toLocaleTimeString("en-IN", { hour:"2-digit", minute:"2-digit" })}` : ""}
     </div>`;
+}
+
+// ── base batch choice, shown before P030 of a new finished-product batch ──
+function rBaseChoice(proc) {
+  const baseCode = baseProductOf(S.product);
+  const isAdmin = S.operator === SELF_VERIFY_EXEMPT;
+  const header = `
+    <div class="header">
+      <h1>Process ${proc.no} · ${proc.name}</h1>
+      <p>${PRODUCTS[S.product].label} · ${S.date} · ${S.shift}${S.batchNo?` · Batch ${S.batchNo}`:""}</p>
+    </div>`;
+  let reuse = "";
+  if (S.baseMode === "reuse") {
+    if (S.sheetBatchReg === null && !S.sheetBatchRegLoading && !S.sheetBatchRegError) refreshSheetBatches();
+    const list = S.sheetBatchReg === null ? [] : eligibleBaseBatches(S.product);
+    const opts = list.map(b => {
+      const tag = b.full ? (isAdmin ? " — LIMIT REACHED (Admin override)" : " — LIMIT REACHED") : "";
+      return `<option value="${htmlText(b.key)}" ${S.baseSel === b.key ? "selected" : ""} ${b.full && !isAdmin ? "disabled" : ""}>${htmlText(b.key)} · Day ${b.days} · used ${b.used} of ${b.allowed}${tag}</option>`;
+    }).join("");
+    reuse = `
+      <label>${baseCode} base batch</label>
+      <select onchange="S.baseSel=this.value;render()">
+        <option value="">— Select base batch —</option>${opts}
+      </select>
+      ${S.sheetBatchRegLoading ? `<div style="font-size:12px;color:#64748b;margin-top:8px;">⏳ Loading base batches…</div>` : ""}
+      ${!S.sheetBatchRegLoading && !list.length ? `<div class="alert" style="margin-top:10px;">⚠ No verified ${baseCode} base batch is available. A base batch needs Approval Sample verified through Process 070. <span style="text-decoration:underline;cursor:pointer;" onclick="refreshSheetBatches()">↻ refresh</span></div>` : ""}
+      <div style="font-size:11px;color:#94a3b8;margin-top:6px;">Each base batch allows 4 reuses for every day it ran.</div>
+      <button class="btn-primary" onclick="confirmBaseReuse()" ${S.baseSel ? "" : "disabled"}>Use this base batch → start at P080</button>`;
+  }
+  return `
+    ${header}
+    <div class="card">
+      <div style="font-size:16px;font-weight:800;margin-bottom:4px;">Base batch for ${htmlText(PRODUCTS[S.product].label)}</div>
+      <div style="font-size:13px;color:#64748b;margin-bottom:14px;">Process 030–070 can be run on this batch, or taken from a ${baseCode} base batch that was already made and verified.</div>
+      <div class="shift-row">
+        <div class="shift-btn ${S.baseMode === "run" ? "on" : ""}" onclick="chooseBaseRun()">New — run P030–P070 now</div>
+        <div class="shift-btn ${S.baseMode === "reuse" ? "on" : ""}" onclick="chooseBaseReuse()">Use a ${baseCode} base batch</div>
+      </div>
+      ${reuse}
+    </div>
+    <div class="nav-row no-print">
+      <button class="btn-back" onclick="navBack()">← Back</button>
+    </div>`;
+}
+function chooseBaseRun() { S.baseMode = "run"; S.baseSel = ""; render(); }
+function chooseBaseReuse() { S.baseMode = "reuse"; S.baseSel = ""; render(); }
+function confirmBaseReuse() {
+  const key = S.baseSel;
+  if (!key) { alert("Please select a base batch."); return; }
+  const item = eligibleBaseBatches(S.product).find(b => b.key === key);
+  if (!item) { alert("That base batch isn't available any more (it may not be verified yet, or it was closed). Tap refresh and choose again."); return; }
+  let override = false;
+  if (item.full) {
+    if (S.operator !== SELF_VERIFY_EXEMPT) { alert(`Base batch ${key} has reached its limit (${item.used} of ${item.allowed} uses). Choose another base batch, or make a new one.`); return; }
+    if (!confirm(`Base batch ${key} has already been used ${item.used} of ${item.allowed} times.\n\nAdmin override: use it anyway? This is recorded on the Sheet.`)) return;
+    override = true;
+  }
+  const typed = buildProcessesFull(S.product).filter(p => Number(p.no) <= 70).some(p => procHasData(p));
+  if (typed) { alert("Readings are already recorded for Process 030–070 on this batch. Reusing a base batch would drop them, so continue with this batch instead."); return; }
+  S.baseSrc = key; S.baseOverride = override; S.baseMode = "reuse";
+  S.processIdx = 0; S.reportedThroughIdx = 0;
+  render();
 }
 
 // ── normal checks ──
@@ -4032,7 +4185,9 @@ const SHEET_HEADERS = [
   // past Block B needs no such migration: it's pure growth, nothing existing moves. ──
   "Last Saved At",
   // ── Block C continued: Process 120 gauge readings (number read from the photo + unit) ──
-  "Pressure Testing (P120)","Fitting Load Test (P120)","Air Leakage (P120)"
+  "Pressure Testing (P120)","Fitting Load Test (P120)","Air Leakage (P120)",
+  // ── Block C continued: base batch this finished batch reuses (blank = ran P030–P070 itself) ──
+  "Base Batch"
 ];
 const GAUGE_COLS = ["Pressure Testing (P120)","Fitting Load Test (P120)","Air Leakage (P120)"];
 const GAUGE_COL_BY_CHECK = { "Pressure Testing":"Pressure Testing (P120)", "Fitting Load Test":"Fitting Load Test (P120)", "Air Leakage":"Air Leakage (P120)" };
@@ -4048,7 +4203,7 @@ function colLetter(n) { // 1-indexed column number -> spreadsheet letter(s)
 }
 const LAST_SAVED_COL = colLetter(SHEET_HEADERS.indexOf(LAST_SAVED_COL_NAME) + 1);
 // Block C = Last Saved At + the three gauge readings, written together in one range.
-const BLOCK_C_END_COL = colLetter(SHEET_HEADERS.indexOf(LAST_SAVED_COL_NAME) + 1 + GAUGE_COLS.length);
+const BLOCK_C_END_COL = colLetter(SHEET_HEADERS.indexOf(LAST_SAVED_COL_NAME) + 1 + GAUGE_COLS.length + 1);   // + the Base Batch column
 
 // ═══════════════════════════════════════════════
 // CLOSE BATCH → FINAL REPORT (groundwork for the PDIR)
@@ -4714,7 +4869,7 @@ async function ensureLastSavedHeader() {
     await fetch("/api/submit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "update", range: `${LAST_SAVED_COL}1:${BLOCK_C_END_COL}1`, rows: [[LAST_SAVED_COL_NAME, ...GAUGE_COLS]] })
+      body: JSON.stringify({ mode: "update", range: `${LAST_SAVED_COL}1:${BLOCK_C_END_COL}1`, rows: [[LAST_SAVED_COL_NAME, ...GAUGE_COLS, BASE_COL_NAME]] })
     });
   } catch (e) { /* best-effort — see comment above */ }
   finally { lastSavedHeaderEnsured = true; }
@@ -4806,7 +4961,7 @@ function silentCheckpoint() {
           roundIdx, roundRowNum: rowNum, roundLastDate: date
         });
         await ensureLastSavedHeader();
-        await post({ mode: "update", range: `${LAST_SAVED_COL}${rowNum}:${BLOCK_C_END_COL}${rowNum}`, rows: [[new Date().toISOString(), ...buildGaugeCols()]] });
+        await post({ mode: "update", range: `${LAST_SAVED_COL}${rowNum}:${BLOCK_C_END_COL}${rowNum}`, rows: [blockCValues()] });
         saveState();
       }
     } catch (e) {
@@ -4898,7 +5053,7 @@ async function submitToSheet(isRetry) {
     const lastSavedRes = await fetch("/api/submit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "update", range: `${LAST_SAVED_COL}${rowNum}:${BLOCK_C_END_COL}${rowNum}`, rows: [[new Date().toISOString(), ...buildGaugeCols()]] })
+      body: JSON.stringify({ mode: "update", range: `${LAST_SAVED_COL}${rowNum}:${BLOCK_C_END_COL}${rowNum}`, rows: [blockCValues()] })
     });
     if (!lastSavedRes.ok) {
       const lastSavedData = await lastSavedRes.json().catch(() => ({}));
