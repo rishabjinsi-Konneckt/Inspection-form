@@ -1949,7 +1949,7 @@ function freshState() {
     activeBraid:null,
     supName:"", verified:{}, finalisedAt:"",
     submitStatus:"", submitError:"",
-    batchBase:"", batchNo:"", batchDay:1, reportedThroughIdx:0, dayRowNum:null,
+    batchBase:"", batchNo:"", batchDay:1, reportedThroughIdx:0, dayRowNum:null, touched:{},
     baseSrc:"", baseOverride:false, baseMode:"", baseSel:"",   // base batch this finished batch reuses (P030–P070 done there)
     editSel:null, editInfo:null,   // editing an already-submitted, not-yet-verified shift (see openEditSubmitted)
     selectedBatch:"", batchSearch:"",
@@ -2042,8 +2042,18 @@ function recordedReadingCount() {
 let S = freshState();
 
 // helpers so rest of code stays concise
-function curEntries()  { return S.roundData[S.currentRound].entries;  }
-function curBraiding() { return S.roundData[S.currentRound].braiding; }
+// Every write to the current round's entries / braiding marks that PROCESS as touched in this
+// session (S.touched). The Sheet save only skips ("windows out") processes reported on an earlier
+// pass — but anything the operator records now must always be written, even if the phone's resume
+// point sat later (e.g. a shift left unfinished on a previous day resumes at P100, the operator
+// goes back and enters P030–P090: those used to stay on the phone and never reach the Sheet).
+function markTouched(no) { if (!S.touched) S.touched = {}; S.touched[no] = true; }
+function curEntries()  {
+  return new Proxy(S.roundData[S.currentRound].entries, { set(t, k, v) { markTouched(String(k).split("_")[0]); t[k] = v; return true; } });
+}
+function curBraiding() {
+  return new Proxy(S.roundData[S.currentRound].braiding, { set(t, k, v) { markTouched("070"); t[k] = v; return true; } });
+}
 
 // Uses LOCAL calendar date (not UTC) — toISOString() would silently roll back to
 // "yesterday" for any IST user working between midnight and 5:30am, which would corrupt
@@ -2924,6 +2934,7 @@ function startInspection() {
 
   S.batchBase = finalBase;
   S.baseSrc = ""; S.baseOverride = false; S.baseMode = ""; S.baseSel = "";
+  S.touched = {};
   S.batchDay  = 1;
   S.batchNo   = S.batchBase;
   S.reportedThroughIdx = 0;
@@ -2996,6 +3007,7 @@ function continueBatch() {
   S.currentRound = roundIdx;
   // A finished batch that reuses a base batch has no P030–P070 of its own (see buildProcesses).
   S.baseSrc = info.baseSrc || ""; S.baseOverride = !!info.baseOverride; S.baseMode = ""; S.baseSel = "";
+  S.touched = {};
 
   if (startingFreshDay) {
     // The previous day's pass at this shift is done and already signed off — this is a new,
@@ -3161,6 +3173,7 @@ async function openEditSubmitted(base, info, roundIdx, roundInfo, op) {
   S.batchBase = base; S.batchNo = row["Batch No."]; S.batchDay = parseBatchNo(row["Batch No."]).day || 1;
   S.currentRound = roundIdx; S.shift = ROUND_LABELS[roundIdx];
   S.baseSrc = info.baseSrc || ""; S.baseOverride = !!info.baseOverride; S.baseMode = ""; S.baseSel = "";
+  S.touched = {};
   S.procOperators = {};
   S.roundData[roundIdx] = emptyRound();
   hydrateRoundFromSheetRows(roundIdx, [row], info.product);
@@ -4121,8 +4134,9 @@ function hasNewProgressToReport() {
   const braidIdx  = braidProc ? procOrder[braidProc.no] : -1;
   const rd = S.roundData[S.currentRound];
   if (!rd) return false;
-  const hasEntry = Object.keys(rd.entries).some(k => (procOrder[k.split("_")[0]] ?? 0) >= reportedThru);
-  const hasBraid = braidIdx >= reportedThru && Object.keys(rd.braiding).length > 0;
+  const touched = S.touched || {};
+  const hasEntry = Object.keys(rd.entries).some(k => (procOrder[k.split("_")[0]] ?? 0) >= reportedThru || touched[k.split("_")[0]]);
+  const hasBraid = (braidIdx >= reportedThru || (braidProc && touched[braidProc.no])) && Object.keys(rd.braiding).length > 0;
   return hasEntry || hasBraid;
 }
 
@@ -4781,10 +4795,11 @@ function buildSheetRow() {
   const reportedThru = S.reportedThroughIdx || 0;
   const braidProc = procs.find(pr => pr.type === "braiding");
   const braidIdx  = braidProc ? procOrder[braidProc.no] : -1;
-  const braidWindowedOut = braidIdx >= 0 && braidIdx < reportedThru;
+  const touched = S.touched || {};
+  const braidWindowedOut = braidIdx >= 0 && braidIdx < reportedThru && !touched[braidProc.no];
 
   const g = (no, key) => {
-    if ((procOrder[no] ?? 0) < reportedThru) return {};
+    if ((procOrder[no] ?? 0) < reportedThru && !touched[no]) return {};
     return rd.entries[pkey(no, key)] || {};
   };
   // Windowed copy of rd for the braiding block, so buildBlockARow's brLabels/brPhotos/
@@ -4881,7 +4896,7 @@ function buildGaugeCols() {
   const rd = S.roundData[S.currentRound];
   const procs = buildProcesses(S.product);
   const idx = procs.findIndex(p => p.no === "120");
-  if (!rd || idx < 0 || idx < (S.reportedThroughIdx || 0)) return ["", "", ""];
+  if (!rd || idx < 0 || idx < (S.reportedThroughIdx || 0) && !(S.touched && S.touched["120"])) return ["", "", ""];
   return ["Pressure Testing", "Fitting Load Test", "Air Leakage"].map(k => (rd.entries[pkey("120", k)] || {}).label || "");
 }
 
