@@ -2998,6 +2998,20 @@ function continueBatch() {
 
   const batchSameDay = info.lastDate === todayStr;
 
+  // Whatever readings this phone is holding in memory belong to the batch it was LAST working on.
+  // Continuing a DIFFERENT batch must not inherit them (they would be written under the wrong
+  // batch, or hide that this shift still has to be rebuilt from the Sheet).
+  const foreignSession = !!(S.batchBase && S.batchBase !== base);
+  if (foreignSession) {
+    const held = recordedReadingCount();
+    if (held > 0 && !confirm(
+      `This phone still holds ${held} unsaved reading${held === 1 ? "" : "s"} from batch ${S.batchBase}.\n\n` +
+      `Continuing ${base} will discard ${held === 1 ? "it" : "them"}. OK = discard and continue, Cancel = stay (go back and use "Save Progress" on that batch first).`)) return;
+    S.roundData = ROUND_LABELS.map(() => emptyRound());
+    S.procOperators = {};
+    S.verified = {};
+  }
+
   S.product   = info.product;
   S.operator  = op;
   S.date      = todayStr;
@@ -3073,7 +3087,22 @@ function continueBatch() {
       const procsR = buildProcesses(info.product, S.baseSrc);
       const todaysRows = (roundInfo.sheetRows || []).filter(r => r.Date === todayStr);
       const todaysRow = todaysRows[todaysRows.length - 1];
-      if (todaysRow) {
+      const heldRd = S.roundData[roundIdx];
+      const heldNothing = !Object.keys(heldRd.entries).length && !Object.keys(heldRd.braiding || {}).length;
+      if (todaysRow && heldNothing) {
+        // This phone knows the shift but holds none of its readings (its memory was reset, or it
+        // was last used for something else) — rebuild them from today's Sheet row so the shift
+        // continues where it was saved instead of starting again from Process 030.
+        hydrateRoundFromSheetRows(roundIdx, todaysRows, info.product);
+        const rdS = S.roundData[roundIdx];
+        attachSheetPhotos(rdS, todaysRow, info.product);
+        Object.values(rdS.entries).forEach(e => { if (e.result === "NO_RUN") e.label = "No Run"; });
+        S.reportedThroughIdx = 0;          // the save rewrites today's whole row from these entries
+        S.dayRowNum = todaysRow.__row || S.dayRowNum;
+        let ndH = procsR.findIndex(p => !isProcDone(p));
+        if (ndH < 0) ndH = procsR.length - 1;
+        S.processIdx = ndH;
+      } else if (todaysRow) {
         const firstWithData = procsR.findIndex(p => p.type === "braiding"
           ? Array.from({ length: PRODUCTS[info.product].braiding.machines }, (_, i) => todaysRow[`BR-${String(i + 1).padStart(2, "0")} O.D.`]).some(Boolean)
           : p.checks.some(c => vrSheetValue(todaysRow, p.no, c.key)));
