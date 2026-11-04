@@ -1302,7 +1302,10 @@ function parseProductsFromRows(rows) {
     const lenMin = num(row["Cutting Length Min"]), lenMax = num(row["Cutting Length Max"]), lenStep = num(row["Cutting Length Least Count"], 5);
     const pressMin = num(row["Crimping Press Min"]), pressMax = num(row["Crimping Press Max"]), pressStep = num(row["Crimping Press Least Count"], 4);
     const loadMin = num(row["Crimping Load Min"]), loadMax = num(row["Crimping Load Max"]), loadStep = num(row["Crimping Load Least Count"], 5);
-    const flow = (row["Flow"] || "030,040,050,060,070,080,090,100,120,130").split(",").map(s => s.trim()).filter(Boolean);
+    // Sheets drops a leading zero when a Flow cell is typed as numbers ("030,040" -> "30,040"), so
+    // every all-digit step is padded back to 3 digits.
+    const flow = (row["Flow"] || "030,040,050,060,070,080,090,100,120,130").split(",").map(s => s.trim()).filter(Boolean)
+      .map(s => /^\d+$/.test(s) ? s.padStart(3, "0") : s);
     out[code] = {
       label: code,
       desc: row["Description"] || "",
@@ -2610,8 +2613,9 @@ function isBaseProduct(code) {
 }
 function baseProductOf(code) {
   if (!PRODUCTS[code] || isBaseProduct(code)) return "";
-  const pre = String(code).slice(0, 4);
-  return (pre !== code && PRODUCTS[pre] && isBaseProduct(pre)) ? pre : "";
+  // The base product whose code the finished product's name starts with (longest match wins).
+  const hits = Object.keys(PRODUCTS).filter(b => b !== code && isBaseProduct(b) && String(code).startsWith(b));
+  return hits.sort((a, b) => b.length - a.length)[0] || "";
 }
 function parseBaseCell(v) {
   const s = String(v || "").trim();
