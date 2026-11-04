@@ -161,6 +161,10 @@ select:focus, input[type="date"]:focus { border-color: #2563eb; }
 .gauge-result{font-size:13px;font-weight:700;margin:6px 0;padding:8px 10px;border-radius:8px;}
 .gauge-result.gr-pass{background:#f0fdf4;color:#15803d;}
 .gauge-result.gr-fail{background:#fef2f2;color:#b91c1c;}
+.lock-chip{font-size:11px;margin-top:8px;padding:5px 9px;border-radius:7px;}
+.lock-chip.open{color:#0f766e;background:#f0fdfa;border:1px solid #99f6e4;}
+.lock-chip.locked{color:#64748b;background:#f1f5f9;border:1px solid #e2e8f0;}
+.undo-link{text-decoration:underline;font-weight:700;cursor:pointer;}
 .gauge-change{float:right;font-weight:600;font-size:12px;text-decoration:underline;cursor:pointer;color:#475569;}
 .photo-note-warn { background: #fffbeb; border: 1px solid #fcd34d; color: #92400e; border-radius: 8px;
                    padding: 8px 10px; font-weight: 700; }
@@ -2048,11 +2052,194 @@ let S = freshState();
 // point sat later (e.g. a shift left unfinished on a previous day resumes at P100, the operator
 // goes back and enters P030–P090: those used to stay on the phone and never reach the Sheet).
 function markTouched(no) { if (!S.touched) S.touched = {}; S.touched[no] = true; }
+// Stamps a reading when its value really changes (setAt) and when a new photo lands (photoAt);
+// the lock below is measured from those moments.
+function stampChange(old, v) {
+  if (!v || typeof v !== "object") return;
+  if (v.result !== undefined && v.result !== null) {
+    const changed = !old || old === v ? !v.setAt : (old.result !== v.result || old.label !== v.label || old.value !== v.value);
+    if (changed) v.setAt = Date.now();
+  }
+  if (v.photo && v.photoSeen !== v.photo) { v.photoAt = Date.now(); v.photoSeen = v.photo; }
+}
 function curEntries()  {
-  return new Proxy(S.roundData[S.currentRound].entries, { set(t, k, v) { markTouched(String(k).split("_")[0]); t[k] = v; return true; } });
+  return new Proxy(S.roundData[S.currentRound].entries, { set(t, k, v) { markTouched(String(k).split("_")[0]); stampChange(t[k], v); t[k] = v; return true; } });
 }
 function curBraiding() {
-  return new Proxy(S.roundData[S.currentRound].braiding, { set(t, k, v) { markTouched("070"); t[k] = v; return true; } });
+  return new Proxy(S.roundData[S.currentRound].braiding, { set(t, k, v) { markTouched("070"); stampChange(t[k], v); t[k] = v; return true; } });
+}
+
+// ═══════════════════════════════════════════════
+// READING LOCK — a tapped reading can be undone freely for UNDO_MS; after that it is locked.
+// Changing a locked reading needs a reason and a PIN (the preparer's; a FAIL turned into PASS needs
+// the Admin's or another team member's), a fresh photo where the check has one, and is written to
+// the "Edit Log" tab so the verifier can see it. Editing an already-submitted shift (edit mode) has
+// its own rules and is not affected.
+// ═══════════════════════════════════════════════
+const UNDO_MS = 10000;
+const EDIT_TAB = "Edit Log";
+const EDIT_HEADERS = ["Changed At","Date","Batch No.","Shift / Sample","Process","Check","Old Result","Old Value","New Result","New Value","Reason","Prepared By","Approved By"];
+const EDIT_Q_KEY = "fqa12_edit_log_queue_v1";
+const LOCK_TEXT = "🔒 Locked — to change it, tap another option (reason + PIN needed)";
+
+// Not a finished reading yet: PASS tapped but its range / value not entered, or a gauge number the AI
+// read from the photo that the operator hasn't confirmed with Save. These stay freely editable.
+function entryPending(e) {
+  if (!e || e.result === undefined || e.result === null) return false;
+  if (e.result === "PASS" && !e.label && !(typeof e.value === "number")) return true;
+  if (e.source === "ai" && e.confirmed === false) return true;
+  return false;
+}
+function entryLocked(e) {
+  if (!e || e.result === undefined || e.result === null) return false;
+  if (entryPending(e)) return false;
+  if (!e.setAt) return true;                       // recorded earlier / loaded from the Sheet
+  const now = Date.now();
+  if (now - Math.max(e.setAt, e.photoAt || 0) <= UNDO_MS) return false;
+  if (e.photoStatus === "uploading") return false;
+  if (e.camAsked && !e.photo && now - e.setAt < 60000) return false;   // camera is open / photo on its way (max 1 min)
+  return true;
+}
+function lookupReading(ref) { return ref.braid ? curBraiding()[ref.braid] : curEntries()[ref.key]; }
+function refId(ref) { return ref.braid ? "b:" + ref.braid : "e:" + ref.key; }
+function refFromId(id) { return id.startsWith("b:") ? { braid: id.slice(2) } : { key: id.slice(2) }; }
+
+// true = the change may go ahead now. false = locked: the change dialog was opened (it calls `retry`
+// again once approved) and the caller must stop.
+function allowReadingChange(ref, newResult, newLabel, retry) {
+  if (S.editSel && S.editSel.length) return true;
+  const e = lookupReading(ref);
+  if (!e || !e.result) return true;
+  if (e.approvedChange) { delete e.approvedChange; return true; }
+  if (e.result === newResult && (e.label || "") === (newLabel || "")) return true;
+  if (!entryLocked(e)) return true;
+  openChangeModal(ref, e, newResult, newLabel, retry);
+  return false;
+}
+
+// The little line under a reading: "Undo" while it is still free, "Locked" afterwards.
+function lockChipHtml(ref, e) {
+  if (S.editSel && S.editSel.length) return "";
+  if (!e || !e.result || entryPending(e)) return "";
+  const id = refId(ref);
+  return entryLocked(e)
+    ? `<div class="lock-chip locked" data-lock-ref="${id}">${LOCK_TEXT}</div>`
+    : `<div class="lock-chip open" data-lock-ref="${id}">↶ <span class="undo-link" onclick="undoReading('${id}')">Undo</span> &middot; locks in a few seconds</div>`;
+}
+function undoReading(id) {
+  const ref = refFromId(id);
+  const e = lookupReading(ref);
+  if (!e) return;
+  if (entryLocked(e)) { alert("This reading is locked now. Tap another option to request a change."); render(); return; }
+  const store = ref.braid ? S.roundData[S.currentRound].braiding : S.roundData[S.currentRound].entries;
+  delete store[ref.braid || ref.key];
+  S.activeBraid = null;
+  render();
+}
+let lockTimer = null;
+function armLockTimers() {
+  try {
+    if (typeof document === "undefined" || !document.querySelectorAll) return;
+    const open = document.querySelectorAll(".lock-chip.open");
+    if (!open || !open.length) return;
+    clearTimeout(lockTimer);
+    lockTimer = setTimeout(() => {
+      document.querySelectorAll(".lock-chip.open").forEach(el => {
+        const e = lookupReading(refFromId(el.getAttribute("data-lock-ref")));
+        if (!e || entryLocked(e)) { el.className = "lock-chip locked"; el.innerHTML = LOCK_TEXT; }
+      });
+      armLockTimers();
+    }, 1500);
+  } catch (err) { /* cosmetic only */ }
+}
+
+function editQueue() { try { return JSON.parse(localStorage.getItem(EDIT_Q_KEY)) || []; } catch (e) { return []; } }
+function saveEditQueue(q) { try { localStorage.setItem(EDIT_Q_KEY, JSON.stringify(q)); } catch (e) {} }
+let editLogBusy = false, editTabReady = false;
+async function flushEditLog() {
+  if (editLogBusy) return;
+  if (!editQueue().length) return;
+  editLogBusy = true;
+  try {
+    if (!editTabReady) { await ensureTab(EDIT_TAB, EDIT_HEADERS); editTabReady = true; }
+    for (let q = editQueue(); q.length; q = editQueue()) {
+      await sheetApi({ rows: [q[0]], range: `${quoteTab(EDIT_TAB)}!A:${colLetter(EDIT_HEADERS.length)}` });
+      const rest = editQueue(); rest.shift(); saveEditQueue(rest);
+    }
+  } catch (err) { console.warn("Edit log not saved yet, will retry:", err && err.message); }
+  finally { editLogBusy = false; }
+}
+
+// ── change dialog ──
+const CHANGE_REASONS = ["Tapped the wrong option by mistake", "Re-measured — the value was different", "Other (write it below)"];
+function openChangeModal(ref, e, newResult, newLabel, retry) {
+  closeChangeModal();
+  const needsVerifier = e.result === "FAIL" && newResult === "PASS";
+  const preparer = S.operator || "";
+  const approvers = needsVerifier ? DEVICE_USERS.filter(u => u !== preparer || u === SELF_VERIFY_EXEMPT) : [preparer];
+  window.__chg = { ref, e, newResult, newLabel, retry, needsVerifier, preparer };
+  const what = ref.braid ? `${ref.braid} (Process 070)` : `Process ${ref.key.split("_")[0]} · ${ref.key.slice(ref.key.split("_")[0].length + 1)}`;
+  const show = (r, l) => htmlText(r === "NO_RUN" ? "No Run" : (l || r || "—"));
+  const div = document.createElement("div");
+  div.id = "chg-modal";
+  div.style.cssText = "position:fixed;left:0;top:0;right:0;bottom:0;background:rgba(15,23,42,.6);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;";
+  div.innerHTML = `
+    <div style="background:#fff;border-radius:14px;padding:18px;max-width:420px;width:100%;max-height:92vh;overflow:auto;font-family:inherit;">
+      <div style="font-size:16px;font-weight:800;margin-bottom:4px;">🔒 Change a locked reading</div>
+      <div style="font-size:13px;color:#475569;margin-bottom:10px;">${htmlText(what)}<br>
+        <b>${show(e.result, e.label)}</b> &rarr; <b>${show(newResult, newLabel)}</b></div>
+      ${needsVerifier ? `<div style="font-size:12px;color:#b45309;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 10px;margin-bottom:10px;">A FAIL can only be turned into a PASS with the PIN of the Admin or another team member (not the preparer).</div>` : ""}
+      <label style="margin-top:0;">Reason</label>
+      <select id="chg-reason" onchange="document.getElementById('chg-other').style.display=this.value===&quot;${CHANGE_REASONS[2]}&quot;?'block':'none'">
+        ${CHANGE_REASONS.map(r => `<option value="${r}">${r}</option>`).join("")}
+      </select>
+      <input type="text" id="chg-other" placeholder="Write the reason" style="display:none;width:100%;padding:11px 13px;border:2px solid #e2e8f0;border-radius:10px;font-size:14px;margin-top:8px;">
+      <label>${needsVerifier ? "Approved by" : "Prepared by"}</label>
+      ${needsVerifier
+        ? `<select id="chg-approver"><option value="">— Select —</option>${approvers.map(a => `<option value="${a}">${a}</option>`).join("")}</select>`
+        : `<div style="font-size:14px;font-weight:700;padding:6px 0;">${htmlText(preparer || "—")}</div>`}
+      <label>PIN</label>
+      <input type="password" inputmode="numeric" id="chg-pin" placeholder="PIN" style="width:100%;padding:13px 14px;border:2px solid #e2e8f0;border-radius:10px;font-size:15px;outline:none;">
+      <div style="font-size:11px;color:#94a3b8;margin-top:6px;">The photo for this reading has to be taken again. This change is recorded in the Edit Log.</div>
+      <div style="display:flex;gap:10px;margin-top:14px;">
+        <button class="btn-outline" style="margin-top:0;flex:1;" onclick="chgCancel()">Cancel</button>
+        <button class="btn-primary" style="margin-top:0;flex:1;" id="chg-ok" onclick="chgConfirm()">Change it</button>
+      </div>
+    </div>`;
+  document.body.appendChild(div);
+}
+function closeChangeModal() {
+  const m = document.getElementById("chg-modal");
+  if (m && m.parentNode) m.parentNode.removeChild(m);
+  window.__chg = null;
+}
+function chgCancel() { closeChangeModal(); render(); }
+async function chgConfirm() {
+  const c = window.__chg; if (!c) return;
+  const val = id => { const el = document.getElementById(id); return el ? String(el.value || "").trim() : ""; };
+  let reason = val("chg-reason");
+  if (reason === CHANGE_REASONS[2]) { reason = val("chg-other"); if (reason.length < 3) { alert("Please write the reason."); return; } }
+  const approver = c.needsVerifier ? val("chg-approver") : c.preparer;
+  if (!approver) { alert(c.needsVerifier ? "Select who is approving this change." : "No Prepared By is set on this inspection."); return; }
+  const pin = val("chg-pin");
+  if (!pin) { alert("Enter the PIN."); return; }
+  const btn = document.getElementById("chg-ok"); if (btn) btn.disabled = true;
+  const ok = await verifyDevicePin(approver, pin);
+  if (btn) btn.disabled = false;
+  if (!ok) return;
+  // Approved: log it, make the photo be retaken, then run the original change.
+  const e = c.e, ref = c.ref;
+  const procNo = ref.braid ? "070" : ref.key.split("_")[0];
+  const check  = ref.braid ? ref.braid : ref.key.slice(procNo.length + 1);
+  const row = [new Date().toISOString(), S.date, S.batchNo || "", ROUND_LABELS[S.currentRound] || "", procNo, check,
+    e.result || "", e.label || "", c.newResult || "", c.newLabel || "", reason, S.operator || "", approver];
+  const q = editQueue(); q.push(row); saveEditQueue(q);
+  ["photo","photoStatus","photoRead","photoError","photoSeen","photoAt","sharpness","camAsked"].forEach(k => { delete e[k]; });
+  e.approvedChange = true;
+  const retry = c.retry;
+  closeChangeModal();
+  retry();
+  flushEditLog();
 }
 
 // Uses LOCAL calendar date (not UTC) — toISOString() would silently roll back to
@@ -2584,6 +2771,7 @@ function render() {
   // Save BEFORE painting, so that if the save fails this very paint can say so.
   saveState();
   document.getElementById("app").innerHTML = saveWarning() + fns[S.screen]();
+  armLockTimers();
 }
 
 // A failed autosave used to be completely invisible. If one ever fails now, say so on
@@ -3541,6 +3729,7 @@ function rChecks(proc) {
         <div class="check-method">Method: ${c.method}</div>
         ${body}
         ${complete ? `<div class="check-rec"><span>${e.label}</span><span style="color:#94a3b8">${e.time}</span></div>` : ""}
+        ${lockChipHtml({ key }, e)}
         ${photoHtml}
         ${(c.method === "Vernier Caliper" || c.type === "gauge") ? photoNoteHtml(e) : ""}
       </div>`;
@@ -3604,6 +3793,7 @@ function rBraiding(proc) {
         </div>
         ${rPhotoBadge(existing, braidPhotoInputId)}
         ${photoNoteHtml(existing)}
+        ${lockChipHtml({ braid: S.activeBraid }, existing)}
         <div class="braid-panel-cancel" onclick="S.activeBraid=null;render()">✕ Cancel</div>
       </div>`;
   }
@@ -3633,6 +3823,7 @@ function selectBraidMachine(m) {
 }
 
 function recordBraid(m, result, label) {
+  if (!allowReadingChange({ braid: m }, result, label, () => recordBraid(m, result, label))) return;
   const existing = curBraiding()[m] || {};
   curBraiding()[m] = { ...existing, result, label, fromSheet: false };
   S.activeBraid  = null;
@@ -3674,12 +3865,15 @@ function maybeOpenBraidCamera(m) {
 // Pass, and Air Leakage's range pick. `fromSheet:false` marks the value as freshly entered
 // now, so a hydrated entry that's re-picked is held to the photo rule like any other.
 function recordPF(key, result, label) {
+  if (!allowReadingChange({ key }, result, label, () => recordPF(key, result, label))) return;
   const existing = curEntries()[key] || {};
   curEntries()[key] = { ...existing, result, label, time: nowTime(), fromSheet: false }; render();
   maybeOpenCamera(key);
 }
 function selectPass(key) {
   const existing = curEntries()[key] || {};
+  if (existing.result === "PASS") return;   // already PASS: tapping it again must not wipe the chosen range / value
+  if (!allowReadingChange({ key }, "PASS", "", () => selectPass(key))) return;
   curEntries()[key] = { ...existing, result:"PASS", label:"", time: nowTime(), fromSheet: false }; render();
   // Crimp O.D. (pass/fail + typed value): open on PASS. Air Leakage (pass + range) opens
   // later, on the range pick — recordSub().
@@ -3688,11 +3882,13 @@ function selectPass(key) {
   if (chk && chk.type === "pf_manual") maybeOpenCamera(key);
 }
 function recordSub(key, range) {
+  if (!allowReadingChange({ key }, "PASS", range, () => recordSub(key, range))) return;
   const existing = curEntries()[key] || {};
   curEntries()[key] = { ...existing, result:"PASS", label:range, time: nowTime(), fromSheet: false }; render();
   maybeOpenCamera(key);
 }
 function recordBand(key, result, label) {
+  if (!allowReadingChange({ key }, result, label, () => recordBand(key, result, label))) return;
   const existing = curEntries()[key] || {};
   curEntries()[key] = { ...existing, result, label, time: nowTime(), fromSheet: false };
   if (key === pkey("090","Length")) {
@@ -3724,7 +3920,7 @@ function applyGaugeValue(key, v, source) {
   const existing = curEntries()[key] || {};
   const result = gaugeJudge(chk, v);
   curEntries()[key] = { ...existing, value: +Number(v).toFixed(2), source, gaugeUnit: chk.unit, override: false,
-    result, label: gaugeLabel(chk, v, result, false), time: nowTime(), fromSheet: false };
+    result, label: gaugeLabel(chk, v, result, false), time: nowTime(), fromSheet: false, confirmed: false };
 }
 function openGaugeCamera(key) {
   const inp = document.getElementById(`photo_${key}`.replace(/[^a-zA-Z0-9_]/g, "_"));
@@ -3738,9 +3934,15 @@ function recordGauge(key) {
   const raw = inp ? String(inp.value).trim() : "";
   const v = parseFloat(raw);
   if (!raw || !isFinite(v) || v < 0) { alert("Enter the number shown on the display."); return; }
+  const chkG = findCheckByKey(key);
+  if (chkG) {
+    const resG = gaugeJudge(chkG, v);
+    if (!allowReadingChange({ key }, resG, gaugeLabel(chkG, v, resG, false), () => recordGauge(key))) return;
+  }
   const e = curEntries()[key] || {};
   const same = e.photoRead && e.photoRead.readable && Math.abs(e.photoRead.reading - v) < 0.005;
   applyGaugeValue(key, v, same ? "ai" : "typed");
+  { const ec = curEntries()[key]; if (ec) ec.confirmed = true; }   // the operator pressed Save: the reading is theirs now
   render();
   maybeOpenCamera(key);   // photo is compulsory — opens once if none is attached yet
 }
@@ -3748,9 +3950,11 @@ function toggleGaugeResult(key) {
   const chk = findCheckByKey(key); const e = curEntries()[key];
   if (!chk || !e || typeof e.value !== "number") return;
   const to = e.result === "PASS" ? "FAIL" : "PASS";
+  const toLabel = gaugeLabel(chk, e.value, to, to !== gaugeJudge(chk, e.value));
+  if (!allowReadingChange({ key }, to, toLabel, () => toggleGaugeResult(key))) return;
   if (!confirm(`Change this result to ${to}? It will be recorded as changed by the operator.`)) return;
   e.result = to; e.override = to !== gaugeJudge(chk, e.value);
-  e.label = gaugeLabel(chk, e.value, to, e.override);
+  e.label = toLabel; e.setAt = Date.now();
   render();
 }
 async function readGaugePhoto(key) {
@@ -3773,7 +3977,8 @@ async function readGaugePhoto(key) {
       cur.gaugeUnit = chk.unit;
       const usable = data.readable && typeof data.reading === "number" && data.confidence !== "low";
       // Don't overwrite something the operator typed themselves unless the photo agrees with it.
-      if (usable && !(cur.source === "typed" && typeof cur.value === "number")) applyGaugeValue(key, data.reading, "ai");
+      // A locked reading is never overwritten by a re-read of a retaken photo — the operator uses "change".
+      if (usable && !(cur.source === "typed" && typeof cur.value === "number") && !(typeof cur.value === "number" && entryLocked(cur))) applyGaugeValue(key, data.reading, "ai");
     } else {
       delete cur.photoRead;                             // service unavailable — the operator types it
     }
@@ -3842,6 +4047,7 @@ function revertLengthNoRunCascade() {
 function recordManual(key) {
   const val = document.getElementById("manual_" + key)?.value?.trim();
   if (!val) return;
+  if (!allowReadingChange({ key }, "PASS", val, () => recordManual(key))) return;
   const existing = curEntries()[key] || {};
   curEntries()[key] = { ...existing, result:"PASS", label: val, time: nowTime() }; render();
 }
@@ -3933,6 +4139,12 @@ function navNext() {
 function markProcessNoRun() {
   const procs = buildProcesses(S.product);
   const proc  = procs[S.processIdx];
+  // It moves straight on to the next process, so ask first; and never overwrite a real reading.
+  const realRecorded = proc.type === "braiding"
+    ? Object.values(curBraiding()).some(b => b && b.result && b.result !== "NO_RUN")
+    : proc.checks.some(c => { const x = curEntries()[pkey(proc.no, c.key)]; return x && x.result && x.result !== "NO_RUN"; });
+  if (realRecorded) { alert(`Process ${proc.no} already has recorded readings, so it can't be marked "No Run" as a whole. Change individual readings instead.`); return; }
+  if (!confirm(`Mark the whole of Process ${proc.no} as "No Run — Didn't Run Today"?\n\nIt moves on to the next process.`)) return;
   if (proc.type === "braiding") {
     const n  = PRODUCTS[S.product].braiding.machines;
     const ms = Array.from({length:n}, (_,i) => `BR-${String(i+1).padStart(2,"0")}`);
@@ -5861,6 +6073,29 @@ function openVrDetail(rowNum) {
   S.screen = "vrdetail";
   render();
   vrReadAllPhotos(row);
+  vrLoadEdits(row);
+}
+
+// Readings the preparer changed after they were locked (see "READING LOCK") — listed for the verifier.
+let vrEdits = { key: "", rows: [], loading: false };
+async function vrLoadEdits(row) {
+  const key = `${row["Batch No."]}|${row["Shift / Sample"]}|${row.Date}`;
+  vrEdits = { key, rows: [], loading: true };
+  try {
+    const data = await readTab(EDIT_TAB);
+    if (vrEdits.key !== key) return;
+    vrEdits.rows = (data.rows || []).filter(r => r["Batch No."] === row["Batch No."] && r["Shift / Sample"] === row["Shift / Sample"] && r["Date"] === row.Date);
+  } catch (e) { /* no Edit Log tab yet = nothing was ever changed */ }
+  if (vrEdits.key === key) { vrEdits.loading = false; if (S.screen === "vrdetail") render(); }
+}
+function vrEditsHtml(row) {
+  const key = `${row["Batch No."]}|${row["Shift / Sample"]}|${row.Date}`;
+  if (vrEdits.key !== key || !vrEdits.rows.length) return "";
+  const val = (r, l) => esc(r === "NO_RUN" ? "No Run" : (l || r || "—"));
+  return `<div style="margin:0 0 12px;border:1px solid #fcd34d;border-radius:10px;padding:10px 12px;background:#fffbeb;">
+    <div style="font-size:13px;font-weight:800;color:#92400e;margin-bottom:6px;">✎ ${vrEdits.rows.length} reading${vrEdits.rows.length === 1 ? "" : "s"} changed after being locked</div>
+    ${vrEdits.rows.map(r => `<div style="font-size:12px;color:#78350f;margin-bottom:4px;"><b>P${esc(r["Process"])} · ${esc(r["Check"])}</b>: ${val(r["Old Result"], r["Old Value"])} &rarr; ${val(r["New Result"], r["New Value"])}<br><span style="color:#a16207;">${esc(r["Reason"])} · approved by ${esc(r["Approved By"])} · ${esc(String(r["Changed At"]||"").slice(11,16))}</span></div>`).join("")}
+  </div>`;
 }
 
 // ── Verifier photo review ──
@@ -6177,6 +6412,7 @@ function rVrDetail() {
         <div class="meta-item"><div class="meta-lbl">Verified By</div><div class="meta-val">${esc(row["Verified By"]||"—")}</div></div>
         <div class="meta-item"><div class="meta-lbl">Verified Device ID</div><div class="meta-val">${esc(row["Verified Device ID"]||"—")}</div></div>
       </div>
+      ${vrEditsHtml(row)}
       ${rows || `<div style="text-align:center;padding:16px;color:#94a3b8;font-size:13px;">No tracked readings on this row yet.</div>`}
     </div>
     ${confirmBlock}`;
@@ -6313,6 +6549,7 @@ function installBackGuard() {
 
 function boot() {
   installBackGuard();
+  flushEditLog();   // send any locked-reading changes that couldn't be logged earlier
   loadLiveProducts(); // fire-and-forget: upgrades PRODUCTS in place + re-renders when ready
   const saved = loadState();
   if (hasMeaningfulProgress(saved)) {
