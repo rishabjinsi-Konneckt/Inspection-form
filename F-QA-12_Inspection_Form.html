@@ -3006,6 +3006,7 @@ function rSetup() {
       <button class="btn-outline" onclick="S.screen='log';render()">📊 View Inspection Log</button>
       <button class="btn-outline" style="background:#faf5ff;color:#7e22ce;border-color:#9333ea;" onclick="openVerifyReports()">🔒 Verify Reports</button>
     </div>
+    ${pendingCardHtml()}
     ${hasAnyBatches ? `
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
@@ -3173,6 +3174,21 @@ function continueBatch() {
 
   const todayStr = today();
 
+  // Earlier days of THIS batch that were never finished: warn, and block once one has sat for
+  // PENDING_BLOCK_DAYS+ days (Admin may always carry on). See "UNFINISHED SHIFTS".
+  {
+    const earlier = pendingRows().filter(pr => pr.base === base);
+    if (earlier.length) {
+      const hard = earlier.filter(pr => pr.days >= PENDING_BLOCK_DAYS && pr.date >= PENDING_GATE_FROM);
+      const listTxt = earlier.slice(0, 8).map(pr => `• Day ${pr.day} (${pr.date}) · ${pr.label}${pr.thru ? ` · saved through P${pr.thru}` : ""}`).join("\n");
+      if (hard.length && op !== SELF_VERIFY_EXEMPT) {
+        alert(`Earlier days of this batch have been left unfinished for ${PENDING_BLOCK_DAYS}+ days:\n\n${listTxt}\n\nComplete them first — tap "Complete this shift" under "You have unfinished shifts" on the Setup screen.`);
+        return;
+      }
+      if (!confirm(`Earlier days of this batch are still unfinished:\n\n${listTxt}\n\nPlease complete them from "You have unfinished shifts" on the Setup screen.\n\nOK = continue with today anyway, Cancel = go back.`)) return;
+    }
+  }
+
   // A round finalised on an EARLIER day isn't locked forever — see sheetRoundSummary(),
   // which now only looks at the most recent row. Only block reopening it if it was
   // finalised specifically TODAY (nothing left to do, and reopening risks overwriting an
@@ -3322,6 +3338,126 @@ function continueBatch() {
   }
   // procOperators / roundData / verified intentionally NOT reset — progress continues.
   S.screen = "process"; render();
+}
+
+// ═══════════════════════════════════════════════
+// UNFINISHED SHIFTS — rows on the Sheet from an EARLIER day that have no "Finalised At" yet.
+// Shown to the preparer on Setup (Admin sees everyone's), can be completed from there, and an
+// earlier day that stays unfinished for PENDING_BLOCK_DAYS+ blocks continuing the same batch.
+// The block only applies to rows dated PENDING_GATE_FROM or later, so older leftovers are shown
+// (and can be closed by Admin) but never lock a batch.
+// ═══════════════════════════════════════════════
+const PENDING_BLOCK_DAYS = 2;
+const PENDING_GATE_FROM = "2026-11-05";
+function daysBetween(dateStr, toStr) {
+  const a = Date.parse(dateStr + "T00:00:00Z"), b = Date.parse(toStr + "T00:00:00Z");
+  return (isFinite(a) && isFinite(b)) ? Math.round((b - a) / 86400000) : 0;
+}
+function pendingRows() {
+  const out = [], t = today(), reg = S.sheetBatchReg || {};
+  Object.keys(reg).forEach(base => {
+    const e = reg[base];
+    Object.keys(e.rounds || {}).forEach(ri => {
+      (e.rounds[ri] || []).forEach(r => {
+        if (r["Finalised At"]) return;
+        const date = r.Date || "";
+        if (!date || date >= t) return;
+        const product = r.Product || e.product;
+        let thru = null;
+        try { thru = PRODUCTS[product] ? highestFilledProcess(r, product) : null; } catch (err) { thru = null; }
+        out.push({ rowNum: r.__row, base, batchNo: r["Batch No."] || "", day: parseBatchNo(r["Batch No."] || "").day,
+          date, label: ROUND_LABELS[Number(ri)] || r["Shift / Sample"], product, preparer: r["Device ID"] || "",
+          days: daysBetween(date, t), thru });
+      });
+    });
+  });
+  return out.sort((a, b) => a.date.localeCompare(b.date) || a.batchNo.localeCompare(b.batchNo));
+}
+function pendingCardHtml() {
+  if (S.sheetBatchReg === null || !S.operator) return "";
+  const isAdmin = S.operator === SELF_VERIFY_EXEMPT;
+  const all = pendingRows();
+  const shown = isAdmin ? all : all.filter(p => p.preparer === S.operator);
+  if (!shown.length) return "";
+  const lines = shown.slice(0, 40).map(p => {
+    const old = p.days >= PENDING_BLOCK_DAYS;
+    const mine = p.preparer === S.operator || isAdmin;
+    return `<div style="border:1px solid ${old ? "#fdba74" : "#fde68a"};background:${old ? "#fff7ed" : "#fffbeb"};border-radius:10px;padding:9px 11px;margin-bottom:8px;">
+      <div style="font-size:13px;font-weight:700;color:#7c2d12;">${esc(p.product)} · Day ${p.day} (${esc(p.date)}) · ${esc(p.label)}</div>
+      <div style="font-size:12px;color:#92400e;margin-top:2px;">${p.thru ? `Saved through Process ${esc(p.thru)}, not submitted` : "Nothing saved yet"} · ${p.days} day${p.days === 1 ? "" : "s"} ago${isAdmin && p.preparer ? ` · ${esc(p.preparer)}` : ""}</div>
+      <div style="font-size:11px;color:#a16207;">Batch ${esc(p.batchNo)}</div>
+      <div style="display:flex;gap:8px;margin-top:6px;">
+        ${mine ? `<button class="btn-outline" style="margin-top:0;flex:1;padding:8px 6px;font-size:12px;background:#fff7ed;color:#c2410c;border-color:#f97316;" onclick="resumePendingClicked(${p.rowNum})">Complete this shift →</button>` : ""}
+        ${isAdmin ? `<button class="btn-outline no-print" style="margin-top:0;flex:1;padding:8px 6px;font-size:12px;background:#f1f5f9;color:#334155;border-color:#94a3b8;" onclick="closePendingClicked(${p.rowNum})">Close as not run</button>` : ""}
+      </div></div>`;
+  }).join("");
+  return `<div class="card">
+    <div style="font-weight:800;font-size:15px;color:#9a3412;margin-bottom:4px;">⚠ ${isAdmin ? "Unfinished shifts (everyone)" : "You have unfinished shifts"} · ${shown.length}</div>
+    <div style="font-size:12px;color:#64748b;margin-bottom:10px;">Earlier days that were saved but never submitted. ${isAdmin ? "Enter your PIN above before completing or closing one." : "Enter your PIN above, then tap Complete."} A day left unfinished for ${PENDING_BLOCK_DAYS}+ days stops that batch from being continued.</div>
+    ${lines}${shown.length > 40 ? `<div style="font-size:12px;color:#94a3b8;">…and ${shown.length - 40} more</div>` : ""}
+    ${isAdmin ? `<button class="btn-outline no-print" onclick="window.print()">🖨 Print this list</button>` : ""}
+  </div>`;
+}
+async function pendingAuth(needAdmin) {
+  const name = document.getElementById("s-op").value;
+  const pin  = document.getElementById("s-pin").value;
+  if (!name) { alert("Please select who's using this device (Prepared By)."); return null; }
+  if (!pin)  { alert("Please enter your PIN."); return null; }
+  if (needAdmin && name !== SELF_VERIFY_EXEMPT) { alert("Only the Admin can do this."); return null; }
+  if (!(await verifyDevicePin(name, pin))) return null;
+  try { localStorage.setItem(LAST_DEVICE_USER_KEY, name); } catch (e) {}
+  return name;
+}
+async function resumePendingClicked(rowNum) {
+  const op = await pendingAuth(false); if (!op) return;
+  const p = pendingRows().find(x => x.rowNum === rowNum);
+  if (!p) { alert("That shift is no longer on the list. Tap refresh."); return; }
+  if (p.preparer && p.preparer !== op && op !== SELF_VERIFY_EXEMPT) { alert(`This shift was prepared by ${p.preparer}. Only ${p.preparer} (or the Admin) can complete it.`); return; }
+  try { await resumePendingRow(rowNum, op); }
+  catch (e) { console.error(e); alert("Couldn't open this shift: " + (e && e.message ? e.message : e)); }
+}
+async function resumePendingRow(rowNum, op) {
+  const res = await fetch("/api/log", { cache: "no-store" });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error("Couldn't read the Sheet. Check the internet connection.");
+  const row = (data.rows || []).find(r => r.__row === rowNum);
+  if (!row) throw new Error("That row is no longer on the Sheet. Tap refresh.");
+  if (row["Finalised At"]) { alert("This shift has already been finalised."); refreshSheetBatches(); return; }
+  if (!(await ensureProductKnown(row.Product))) throw new Error(`This device doesn't know the product "${row.Product}". Refresh the page and try again.`);
+  const { base, day } = parseBatchNo(row["Batch No."] || "");
+  const roundIdx = ROUND_LABELS.indexOf(row["Shift / Sample"]);
+  if (roundIdx < 0) throw new Error("Unknown shift on that row.");
+  const held = recordedReadingCount();
+  if (held > 0 && S.batchBase !== base && !confirm(`This phone still holds ${held} unsaved reading${held === 1 ? "" : "s"} from another batch. Opening this shift will discard ${held === 1 ? "it" : "them"}. OK = discard and continue.`)) return;
+  const info = mergedBatchRegistry()[base] || {};
+  S.product = row.Product; S.operator = op; S.date = row.Date;
+  S.batchBase = base; S.batchNo = row["Batch No."]; S.batchDay = day || 1;
+  S.currentRound = roundIdx; S.shift = ROUND_LABELS[roundIdx];
+  S.baseSrc = info.baseSrc || ""; S.baseOverride = !!info.baseOverride; S.baseMode = ""; S.baseSel = "";
+  S.touched = {}; S.editSel = null; S.editInfo = null;
+  S.roundData = ROUND_LABELS.map(() => emptyRound()); S.procOperators = {}; S.verified = {};
+  hydrateRoundFromSheetRows(roundIdx, [row], row.Product);
+  const rd = S.roundData[roundIdx];
+  attachSheetPhotos(rd, row, row.Product);
+  Object.values(rd.entries).forEach(e => { if (e.result === "NO_RUN") e.label = "No Run"; });
+  S.supName = row["Supervisor"] || ""; S.finalisedAt = "";
+  S.dayRowNum = row.__row; S.reportedThroughIdx = 0;
+  S.submitStatus = ""; S.submitError = ""; S.activeBraid = null;
+  const procs = buildProcesses(S.product, S.baseSrc);
+  let idx = procs.findIndex(pr => !isProcDone(pr)); if (idx < 0) idx = procs.length - 1;
+  S.processIdx = Math.max(0, idx);
+  S.screen = "process"; render();
+}
+async function closePendingClicked(rowNum) {
+  const op = await pendingAuth(true); if (!op) return;
+  const p = pendingRows().find(x => x.rowNum === rowNum);
+  if (!p) { alert("That shift is no longer on the list. Tap refresh."); return; }
+  const reason = (prompt(`Close "${p.product} · Day ${p.day} (${p.date}) · ${p.label}" as NOT RUN?\n\nThis marks the row as finalised so it stops showing as unfinished. Reason (required):`) || "").trim();
+  if (reason.length < 3) { alert("A reason is needed to close it."); return; }
+  try {
+    await sheetApi({ mode: "update", range: `H${rowNum}:H${rowNum}`, rows: [[`Closed as not run — ${reason} (${op}, ${new Date().toLocaleString("en-IN")})`]] });
+  } catch (e) { alert("Couldn't close it: " + e.message); return; }
+  refreshSheetBatches();
 }
 
 // ═══════════════════════════════════════════════
