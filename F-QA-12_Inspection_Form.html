@@ -2201,8 +2201,8 @@ function openChangeModal(ref, e, newResult, newLabel, retry) {
       ${needsVerifier
         ? `<select id="chg-approver"><option value="">— Select —</option>${approvers.map(a => `<option value="${a}">${a}</option>`).join("")}</select>`
         : `<div style="font-size:14px;font-weight:700;padding:6px 0;">${htmlText(preparer || "—")}</div>`}
-      <label>PIN</label>
-      <input type="password" inputmode="numeric" id="chg-pin" placeholder="PIN" style="width:100%;padding:13px 14px;border:2px solid #e2e8f0;border-radius:10px;font-size:15px;outline:none;">
+      ${needsVerifier ? `<label>Approver's PIN</label>
+      <input type="password" inputmode="numeric" id="chg-pin" placeholder="PIN" style="width:100%;padding:13px 14px;border:2px solid #e2e8f0;border-radius:10px;font-size:15px;outline:none;">` : `<div style="font-size:12px;color:#64748b;margin-top:8px;">You are signed in as ${htmlText(preparer)}.</div>`}
       <div style="font-size:11px;color:#94a3b8;margin-top:6px;">The photo for this reading has to be taken again. This change is recorded in the Edit Log.</div>
       <div style="display:flex;gap:10px;margin-top:14px;">
         <button class="btn-outline" style="margin-top:0;flex:1;" onclick="chgCancel()">Cancel</button>
@@ -2225,9 +2225,10 @@ async function chgConfirm() {
   const approver = c.needsVerifier ? val("chg-approver") : c.preparer;
   if (!approver) { alert(c.needsVerifier ? "Select who is approving this change." : "No Prepared By is set on this inspection."); return; }
   const pin = val("chg-pin");
-  if (!pin) { alert("Enter the PIN."); return; }
+  if (approver !== LOGIN_USER && !pin) { alert("Enter the approver's PIN."); return; }
   const btn = document.getElementById("chg-ok"); if (btn) btn.disabled = true;
-  const ok = await verifyDevicePin(approver, pin);
+  // The signed-in person doesn't type their PIN again; a second person approving a FAIL→PASS does.
+  const ok = approver === LOGIN_USER ? true : await verifyDevicePin(approver, pin);
   if (btn) btn.disabled = false;
   if (!ok) return;
   // Approved: log it, make the photo be retaken, then run the original change.
@@ -2360,6 +2361,76 @@ function registerBatchDay(base, opts) {
 const PINS_TAB = "PINs";
 const LAST_DEVICE_USER_KEY = "fqa12_last_device_user_v1";
 
+// ═══════════════════════════════════════════════
+// SIGN-IN — the app opens on a PIN screen. The PIN identifies the person (PINs tab: Name | PIN) and
+// nothing else is reachable before that. The signed-in name lives only in memory, so it lasts until
+// the page is closed or refreshed — it is never written to localStorage. Prepared By / the verifier
+// are the signed-in person, so the routine PIN boxes are gone; the only other PIN asked for is a
+// second person's approval (FAIL turned into PASS on a locked reading).
+// ═══════════════════════════════════════════════
+let LOGIN_USER = "";
+let loginMode = "pin";
+function paintLogin() { document.getElementById("app").innerHTML = rLogin(); }
+function rLogin() {
+  const box = "width:100%;padding:13px 14px;border:2px solid #e2e8f0;border-radius:10px;font-size:15px;outline:none;margin-top:6px;";
+  const head = `<div class="header"><h1>F-QA-12 · Inprocess Inspection</h1><p>Konneckt Hoses · Quality Control</p></div>`;
+  if (loginMode === "first") {
+    return `${head}<div class="card" id="login-card">
+      <div style="font-size:17px;font-weight:800;margin-bottom:4px;">Set your PIN</div>
+      <div style="font-size:13px;color:#64748b;margin-bottom:10px;">First time only. Pick 4 to 8 digits that nobody else uses.</div>
+      <label>Your name</label>
+      <select id="login-name"><option value="">— Select name —</option>${DEVICE_USERS.map(n => `<option value="${n}">${n}</option>`).join("")}</select>
+      <label>New PIN</label><input type="password" inputmode="numeric" id="login-new1" placeholder="New PIN" style="${box}">
+      <label>Confirm PIN</label><input type="password" inputmode="numeric" id="login-new2" placeholder="Confirm PIN" style="${box}" onkeydown="if(event.key==='Enter')firstPinClicked()">
+      <button class="btn-primary" onclick="firstPinClicked()">Set PIN &amp; sign in →</button>
+      <button class="btn-outline" onclick="loginMode='pin';paintLogin()">← Back</button>
+    </div>`;
+  }
+  return `${head}<div class="card" id="login-card">
+    <div style="font-size:17px;font-weight:800;margin-bottom:4px;">Enter your PIN</div>
+    <div style="font-size:13px;color:#64748b;margin-bottom:6px;">Your PIN signs you in. You stay signed in until you close or refresh this page.</div>
+    <input type="password" inputmode="numeric" id="login-pin" placeholder="PIN" autofocus style="${box}" onkeydown="if(event.key==='Enter')loginClicked()">
+    <button class="btn-primary" onclick="loginClicked()">Sign in →</button>
+    <button class="btn-outline" onclick="loginMode='first';paintLogin()">First time? Set my PIN</button>
+  </div>`;
+}
+async function loginClicked() {
+  const el = document.getElementById("login-pin");
+  const pin = el ? String(el.value || "").trim() : "";
+  if (!pin) { alert("Enter your PIN."); return; }
+  let rows;
+  try { rows = await fetchDevicePins(); }
+  catch (err) { alert("Couldn't check your PIN right now: " + err.message + " — try again."); return; }
+  const hits = rows.filter(r => DEVICE_USERS.includes(r.Name) && String(r.PIN || "").trim() === pin);
+  if (!hits.length) { alert("Incorrect PIN."); if (el) el.value = ""; return; }
+  if (hits.length > 1) { alert("This PIN is used by more than one person. Ask the Admin to give each person a different PIN."); return; }
+  LOGIN_USER = hits[0].Name;
+  afterLogin();
+}
+async function firstPinClicked() {
+  const val = id => { const e = document.getElementById(id); return e ? String(e.value || "").trim() : ""; };
+  const name = val("login-name"), p1 = val("login-new1"), p2 = val("login-new2");
+  if (!name) { alert("Select your name."); return; }
+  if (!/^\d{4,8}$/.test(p1)) { alert("The PIN must be 4 to 8 digits."); return; }
+  if (p1 !== p2) { alert("The two PINs don't match."); return; }
+  let rows;
+  try { rows = await fetchDevicePins(); }
+  catch (err) { alert("Couldn't reach the PIN list: " + err.message + " — try again."); return; }
+  const row = rows.find(r => r.Name === name);
+  if (!row) { alert(`"${name}" isn't set up in the PINs list yet — ask the Admin to add it.`); return; }
+  if (String(row.PIN || "").trim()) { alert(`${name} already has a PIN. Sign in with it, or ask the Admin to clear it.`); return; }
+  if (rows.some(r => r.Name !== name && String(r.PIN || "").trim() === p1)) { alert("Someone else already uses that PIN. Choose a different one."); return; }
+  try { await sheetApi({ mode: "update", range: `${PINS_TAB}!B${row.__row}:B${row.__row}`, rows: [[p1]] }); }
+  catch (err) { alert("Couldn't save your PIN: " + err.message); return; }
+  LOGIN_USER = name;
+  afterLogin();
+}
+function logoutClicked() {
+  const n = recordedReadingCount();
+  if (n > 0 && !confirm(`Inspection in progress — ${n} reading${n === 1 ? "" : "s"} recorded on this phone.\n\nSigning out keeps them here, but the next person who signs in will be asked about them.\n\nOK = sign out`)) return;
+  LOGIN_USER = ""; loginMode = "pin"; paintLogin();
+}
+
 async function fetchDevicePins() {
   const res = await fetch(`/api/log?sheet=${encodeURIComponent(PINS_TAB)}`, { cache: "no-store" });
   const data = await res.json();
@@ -2390,6 +2461,10 @@ async function verifyDevicePin(name, enteredPin) {
     if (confirmPin === null) return false; // cancelled
     if (confirmPin.trim() !== enteredPin.trim()) {
       alert("PINs didn't match — try again.");
+      return false;
+    }
+    if (rows.some(r => r.Name !== name && (r.PIN || "").trim() === enteredPin.trim())) {
+      alert("Someone else already uses that PIN. Choose a different one.");
       return false;
     }
     try {
@@ -2770,6 +2845,7 @@ function allEntryKeys() {
 // RENDER ROUTER
 // ═══════════════════════════════════════════════
 function render() {
+  if (!LOGIN_USER) { if (!document.getElementById("login-card")) paintLogin(); return; }   // nothing is reachable before sign-in
   const fns = { setup:rSetup, process:rProcess, review:rReview, submitted:rSubmitted, report:rReport, log:rLog, logdetail:rLogDetail,
     batchreport:rBatchReport, finalsheet:rFinalSheet, editpick:rEditPick, paused:rPaused, vrpin:rVrPin, vrname:rVrName, vrlist:rVrList, vrdetail:rVrDetail };
   // Save BEFORE painting, so that if the save fails this very paint can say so.
@@ -2920,14 +2996,8 @@ function rSetup() {
   const pOpts = Object.keys(PRODUCTS).map(k =>
     `<option value="${k}" ${S.product===k?"selected":""}>${PRODUCTS[k].label} — ${PRODUCTS[k].desc}</option>`).join("");
 
-  // Pre-fill "Prepared By" with whoever last confirmed a PIN on this browser — pure
-  // convenience, the PIN is still required every time (see verifyDevicePin()).
-  if (!S.operator) {
-    const last = (() => { try { return localStorage.getItem(LAST_DEVICE_USER_KEY); } catch (e) { return null; } })();
-    if (last && DEVICE_USERS.includes(last)) S.operator = last;
-  }
-  const duOpts = DEVICE_USERS.map(o =>
-    `<option value="${o}" ${S.operator===o?"selected":""}>${o}</option>`).join("");
+  // Prepared By is whoever signed in with their PIN (see "SIGN-IN").
+  S.operator = LOGIN_USER;
 
   const batchPreview = (S.product && S.date) ? genBatchBase(S.date, PRODUCTS[S.product].label) : "";
   const shiftLocked = enforceShiftGate();
@@ -2997,11 +3067,11 @@ function rSetup() {
         return blocking ? `<div style="font-size:12px;color:#c2410c;margin-top:6px;">🔒 ${esc(blocking.label)} used "No Run" and isn't fully verified yet — new shifts on this batch are locked until it is.</div>` : "";
       })()}
       <label>Prepared By (Device ID)</label>
-      <select id="s-op" onchange="S.operator=this.value;render()"><option value="">— Select —</option>${duOpts}</select>
-      <label>PIN</label>
-      <input type="password" inputmode="numeric" id="s-pin" placeholder="Your PIN"
-        style="width:100%;padding:13px 14px;border:2px solid #e2e8f0;border-radius:10px;font-size:15px;outline:none;">
-      <div style="font-size:11px;color:#94a3b8;margin-top:4px;">First time on any device? Type a new PIN — you'll confirm it once.</div>
+      <input type="hidden" id="s-op" value="${esc(LOGIN_USER)}">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border:2px solid #e2e8f0;border-radius:10px;background:#f8fafc;">
+        <span style="font-weight:700;">${htmlText(LOGIN_USER)}</span>
+        <span style="font-size:12px;color:#64748b;text-decoration:underline;cursor:pointer;" onclick="logoutClicked()">Not you? Sign out</span>
+      </div>
       <button class="btn-primary" onclick="beginInspectionClicked()">Begin Inspection →</button>
       <button class="btn-outline" onclick="S.screen='log';render()">📊 View Inspection Log</button>
       <button class="btn-outline" style="background:#faf5ff;color:#7e22ce;border-color:#9333ea;" onclick="openVerifyReports()">🔒 Verify Reports</button>
@@ -3013,7 +3083,7 @@ function rSetup() {
         <div style="font-weight:700;font-size:15px;">↻ Continue Existing Batch</div>
         <span style="font-size:11px;color:#94a3b8;cursor:pointer;" onclick="refreshSheetBatches()">${S.sheetBatchRegLoading ? "⏳ syncing…" : "↻ refresh"}</span>
       </div>
-      <div style="font-size:12px;color:#64748b;margin-bottom:10px;">Pick a batch worked on a previous day, then select Prepared By, PIN, and Shift above before continuing. This list includes batches worked on any device.</div>
+      <div style="font-size:12px;color:#64748b;margin-bottom:10px;">Pick a batch worked on a previous day, then select the Shift above before continuing. This list includes batches worked on any device.</div>
       ${S.sheetBatchRegError ? `<div class="alert" style="font-size:12px;">⚠ Couldn't sync with the Sheet: ${esc(S.sheetBatchRegError)} — showing only what's known on this device. <span style="text-decoration:underline;cursor:pointer;" onclick="refreshSheetBatches()">Retry</span></div>` : ""}
       <label style="margin-top:0;">Search</label>
       <input type="text" placeholder="Search by batch number or product…"
@@ -3035,21 +3105,11 @@ function rSetup() {
 // happens first, and only on success do we fall through to the real flow. Kept as thin
 // wrappers so startInspection()/continueBatch() themselves stay synchronous and unchanged.
 async function beginInspectionClicked() {
-  const name = document.getElementById("s-op").value;
-  const pin  = document.getElementById("s-pin").value;
-  if (!name) { alert("Please select who's using this device (Prepared By)."); return; }
-  if (!pin)  { alert("Please enter your PIN."); return; }
-  if (!(await verifyDevicePin(name, pin))) return;
-  try { localStorage.setItem(LAST_DEVICE_USER_KEY, name); } catch (e) {}
+  if (!LOGIN_USER) { paintLogin(); return; }
   startInspection();
 }
 async function continueBatchClicked() {
-  const name = document.getElementById("s-op").value;
-  const pin  = document.getElementById("s-pin").value;
-  if (!name) { alert("Please select who's using this device (Prepared By)."); return; }
-  if (!pin)  { alert("Please enter your PIN."); return; }
-  if (!(await verifyDevicePin(name, pin))) return;
-  try { localStorage.setItem(LAST_DEVICE_USER_KEY, name); } catch (e) {}
+  if (!LOGIN_USER) { paintLogin(); return; }
   try {
     // This device may not know the batch's product yet (stale/failed product list) — refresh
     // it first instead of failing silently.
@@ -3393,19 +3453,15 @@ function pendingCardHtml() {
   }).join("");
   return `<div class="card">
     <div style="font-weight:800;font-size:15px;color:#9a3412;margin-bottom:4px;">⚠ ${isAdmin ? "Unfinished shifts (everyone)" : "You have unfinished shifts"} · ${shown.length}</div>
-    <div style="font-size:12px;color:#64748b;margin-bottom:10px;">Earlier days that were saved but never submitted. ${isAdmin ? "Enter your PIN above before completing or closing one." : "Enter your PIN above, then tap Complete."} A day left unfinished for ${PENDING_BLOCK_DAYS}+ days stops that batch from being continued.</div>
+    <div style="font-size:12px;color:#64748b;margin-bottom:10px;">Earlier days that were saved but never submitted. ${isAdmin ? "Tap Complete to finish one, or close it as not run." : "Tap Complete to finish one."} A day left unfinished for ${PENDING_BLOCK_DAYS}+ days stops that batch from being continued.</div>
     ${lines}${shown.length > 40 ? `<div style="font-size:12px;color:#94a3b8;">…and ${shown.length - 40} more</div>` : ""}
     ${isAdmin ? `<button class="btn-outline no-print" onclick="window.print()">🖨 Print this list</button>` : ""}
   </div>`;
 }
 async function pendingAuth(needAdmin) {
-  const name = document.getElementById("s-op").value;
-  const pin  = document.getElementById("s-pin").value;
-  if (!name) { alert("Please select who's using this device (Prepared By)."); return null; }
-  if (!pin)  { alert("Please enter your PIN."); return null; }
+  const name = LOGIN_USER;
+  if (!name) { paintLogin(); return null; }
   if (needAdmin && name !== SELF_VERIFY_EXEMPT) { alert("Only the Admin can do this."); return null; }
-  if (!(await verifyDevicePin(name, pin))) return null;
-  try { localStorage.setItem(LAST_DEVICE_USER_KEY, name); } catch (e) {}
   return name;
 }
 async function resumePendingClicked(rowNum) {
@@ -4829,12 +4885,9 @@ async function closeBatchClicked() {
   if (closingBusy) return;
   const base = S.selectedBatch;
   if (!base) { alert("Select a batch from the list first."); return; }
-  const name = document.getElementById("s-op").value;
-  const pin  = document.getElementById("s-pin").value;
-  if (!name) { alert("Please select who's using this device (Prepared By)."); return; }
+  const name = LOGIN_USER;
+  if (!name) { paintLogin(); return; }
   if (name !== ADMIN_NAME) { alert("Only Admin (" + ADMIN_NAME + ") can close a batch."); return; }
-  if (!pin) { alert("Please enter your PIN."); return; }
-  if (!(await verifyDevicePin(name, pin))) return;
   if (!confirm(`Close batch ${base}?\n\nAll days will be merged into one averaged final report and moved out of the working sheet. It will then wait for an invoice number.`)) return;
   closingBusy = true;
   try {
@@ -4900,11 +4953,8 @@ function closedBatchesHtml() {
 }
 
 async function invoiceClicked(base) {
-  const name = document.getElementById("s-op").value;
-  const pin  = document.getElementById("s-pin").value;
-  if (!name) { alert("Please select who's using this device (Prepared By)."); return; }
-  if (!pin)  { alert("Please enter your PIN."); return; }
-  if (!(await verifyDevicePin(name, pin))) return;
+  const name = LOGIN_USER;
+  if (!name) { paintLogin(); return; }
   try {
     const data = await readTab(FINAL_TAB);
     const rows = (data.rows || []).filter(r => r["Batch No."] === base);
@@ -6076,8 +6126,9 @@ function esc(s) { return (s||"").replace(/\\/g,"\\\\").replace(/'/g,"\\'"); }
 const VERIFY_PIN = "8396";
 
 function openVerifyReports() {
-  S.vrPin = ""; S.vrName = ""; S.vrRows = null; S.vrLoading = false; S.vrError = "";
-  S.screen = "vrpin"; render();
+  if (!LOGIN_USER) { paintLogin(); return; }
+  S.vrPin = ""; S.vrName = LOGIN_USER; S.vrRows = null; S.vrLoading = false; S.vrError = "";
+  loadVrList();
 }
 
 function rVrPin() {
@@ -6691,7 +6742,21 @@ function boot() {
   installBackGuard();
   flushEditLog();   // send any locked-reading changes that couldn't be logged earlier
   loadLiveProducts(); // fire-and-forget: upgrades PRODUCTS in place + re-renders when ready
+  paintLogin();     // nothing else is shown until a PIN has signed someone in
+}
+function afterLogin() {
   const saved = loadState();
+  // An unfinished inspection on this phone belongs to whoever prepared it.
+  if (hasMeaningfulProgress(saved) && saved.operator && saved.operator !== LOGIN_USER && LOGIN_USER !== SELF_VERIFY_EXEMPT) {
+    document.getElementById("app").innerHTML = `
+      <div class="header"><h1>Unfinished Inspection Found</h1><p>Konneckt Hoses \u00b7 Quality Control</p></div>
+      <div class="card">
+        <div style="font-size:17px;font-weight:800;margin-bottom:6px;">This phone holds ${esc(saved.operator)}'s unfinished inspection</div>
+        <div style="font-size:13px;color:#64748b;margin-bottom:16px;">${saved.product ? `Product <strong>${esc(saved.product)}</strong> \u00b7 ` : ""}Only ${esc(saved.operator)} (or the Admin) can continue it. Ask ${esc(saved.operator)} to sign in on this phone.</div>
+        <button class="btn-primary" onclick="LOGIN_USER='';loginMode='pin';paintLogin()">Sign out</button>
+      </div>`;
+    return;
+  }
   if (hasMeaningfulProgress(saved)) {
     window.__resumeData = saved;
     document.getElementById("app").innerHTML = `
