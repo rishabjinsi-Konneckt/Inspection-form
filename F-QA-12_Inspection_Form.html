@@ -2225,10 +2225,10 @@ async function chgConfirm() {
   const approver = c.needsVerifier ? val("chg-approver") : c.preparer;
   if (!approver) { alert(c.needsVerifier ? "Select who is approving this change." : "No Prepared By is set on this inspection."); return; }
   const pin = val("chg-pin");
-  if (approver !== LOGIN_USER && !pin) { alert("Enter the approver's PIN."); return; }
+  if (c.needsVerifier && !pin) { alert("Enter the approver's PIN."); return; }
+  if (c.needsVerifier && approver === LOGIN_USER) { alert("A different person has to approve a FAIL→PASS change."); return; }
   const btn = document.getElementById("chg-ok"); if (btn) btn.disabled = true;
-  // The signed-in person doesn't type their PIN again; a second person approving a FAIL→PASS does.
-  const ok = approver === LOGIN_USER ? true : await verifyDevicePin(approver, pin);
+  const ok = c.needsVerifier ? await verifyDevicePin(approver, pin) : true;
   if (btn) btn.disabled = false;
   if (!ok) return;
   // Approved: log it, make the photo be retaken, then run the original change.
@@ -2369,6 +2369,33 @@ const LAST_DEVICE_USER_KEY = "fqa12_last_device_user_v1";
 // second person's approval (FAIL turned into PASS on a locked reading).
 // ═══════════════════════════════════════════════
 let LOGIN_USER = "";
+// Idle sign-out, PIN grace after a sensitive action, wrong-PIN lockout (all in memory).
+const IDLE_SIGNOUT_MS = 2 * 60 * 60 * 1000;   // 2 hours without a tap
+const PIN_GRACE_MS    = 5 * 60 * 1000;        // re-ask PIN skipped for 5 min after a correct one
+const PIN_MAX_FAILS   = 5, PIN_LOCK_MS = 60 * 1000;
+let LAST_ACTIVITY = Date.now(), PIN_OK_AT = 0, PIN_FAILS = 0, PIN_LOCK_UNTIL = 0;
+function pinLockedOut() {
+  const left = PIN_LOCK_UNTIL - Date.now();
+  if (left > 0) { alert(`Too many wrong PINs. Wait ${Math.ceil(left / 1000)} seconds and try again.`); return true; }
+  return false;
+}
+function pinWrong() {
+  PIN_FAILS++;
+  if (PIN_FAILS >= PIN_MAX_FAILS) { PIN_FAILS = 0; PIN_LOCK_UNTIL = Date.now() + PIN_LOCK_MS; }
+}
+function pinRight() { PIN_FAILS = 0; }
+function idleCheck() {
+  if (LOGIN_USER && Date.now() - LAST_ACTIVITY > IDLE_SIGNOUT_MS) {
+    LOGIN_USER = ""; PIN_OK_AT = 0; loginMode = "pin";
+    closePinModal(); closeChangeModal();
+    paintLogin();
+  }
+}
+function touchActivity() { LAST_ACTIVITY = Date.now(); }
+if (typeof document !== "undefined" && document.addEventListener) {
+  ["click","touchstart","keydown"].forEach(ev => document.addEventListener(ev, touchActivity, true));
+}
+if (typeof setInterval === "function") { const _it = setInterval(idleCheck, 30000); if (_it && _it.unref) _it.unref(); }
 let loginMode = "pin";
 function paintLogin() { document.getElementById("app").innerHTML = rLogin(); }
 function rLogin() {
@@ -2402,9 +2429,11 @@ async function loginClicked() {
   try { rows = await fetchDevicePins(); }
   catch (err) { alert("Couldn't check your PIN right now: " + err.message + " — try again."); return; }
   const hits = rows.filter(r => DEVICE_USERS.includes(r.Name) && String(r.PIN || "").trim() === pin);
-  if (!hits.length) { alert("Incorrect PIN."); if (el) el.value = ""; return; }
+  if (pinLockedOut()) return;
+  if (!hits.length) { pinWrong(); alert("Incorrect PIN."); if (el) el.value = ""; return; }
+  pinRight();
   if (hits.length > 1) { alert("This PIN is used by more than one person. Ask the Admin to give each person a different PIN."); return; }
-  LOGIN_USER = hits[0].Name;
+  LOGIN_USER = hits[0].Name; LAST_ACTIVITY = Date.now();
   afterLogin();
 }
 async function firstPinClicked() {
@@ -2422,13 +2451,47 @@ async function firstPinClicked() {
   if (rows.some(r => r.Name !== name && String(r.PIN || "").trim() === p1)) { alert("Someone else already uses that PIN. Choose a different one."); return; }
   try { await sheetApi({ mode: "update", range: `${PINS_TAB}!B${row.__row}:B${row.__row}`, rows: [[p1]] }); }
   catch (err) { alert("Couldn't save your PIN: " + err.message); return; }
-  LOGIN_USER = name;
+  LOGIN_USER = name; LAST_ACTIVITY = Date.now();
   afterLogin();
 }
+// Sensitive actions ask for the signed-in person's PIN again, even though they are signed in.
+// Resolves true once the PIN is correct, false if cancelled.
+function requirePin(purpose, name, noGrace) {
+  if (!noGrace && name === LOGIN_USER && Date.now() - PIN_OK_AT < PIN_GRACE_MS) return Promise.resolve(true);
+  return new Promise(resolve => {
+    const old = document.getElementById("pin-modal"); if (old && old.parentNode) old.parentNode.removeChild(old);
+    const div = document.createElement("div");
+    div.id = "pin-modal";
+    div.style.cssText = "position:fixed;left:0;top:0;right:0;bottom:0;background:rgba(15,23,42,.6);z-index:10001;display:flex;align-items:center;justify-content:center;padding:16px;";
+    div.innerHTML = `
+      <div style="background:#fff;border-radius:14px;padding:18px;max-width:380px;width:100%;">
+        <div style="font-size:16px;font-weight:800;margin-bottom:4px;">🔒 ${htmlText(purpose)}</div>
+        <div style="font-size:13px;color:#64748b;margin-bottom:10px;">Enter ${htmlText(name)}'s PIN to continue.</div>
+        <input type="password" inputmode="numeric" id="pin-modal-input" placeholder="PIN" autofocus onkeydown="if(event.key==='Enter')pinAskOk()" style="width:100%;padding:13px 14px;border:2px solid #e2e8f0;border-radius:10px;font-size:15px;outline:none;">
+        <div style="display:flex;gap:10px;margin-top:14px;">
+          <button class="btn-outline" style="margin-top:0;flex:1;" onclick="pinAskCancel()">Cancel</button>
+          <button class="btn-primary" style="margin-top:0;flex:1;" onclick="pinAskOk()">Confirm</button>
+        </div>
+      </div>`;
+    document.body.appendChild(div);
+    window.__pinAsk = { name, resolve };
+  });
+}
+function closePinModal() { const m = document.getElementById("pin-modal"); if (m && m.parentNode) m.parentNode.removeChild(m); }
+async function pinAskOk() {
+  const a = window.__pinAsk; if (!a) return;
+  const el = document.getElementById("pin-modal-input");
+  const pin = el ? String(el.value || "").trim() : "";
+  if (!pin) { alert("Enter the PIN."); return; }
+  if (!(await verifyDevicePin(a.name, pin))) return;
+  if (a.name === LOGIN_USER) PIN_OK_AT = Date.now();
+  window.__pinAsk = null; closePinModal(); a.resolve(true);
+}
+function pinAskCancel() { const a = window.__pinAsk; window.__pinAsk = null; closePinModal(); if (a) a.resolve(false); }
 function logoutClicked() {
   const n = recordedReadingCount();
   if (n > 0 && !confirm(`Inspection in progress — ${n} reading${n === 1 ? "" : "s"} recorded on this phone.\n\nSigning out keeps them here, but the next person who signs in will be asked about them.\n\nOK = sign out`)) return;
-  LOGIN_USER = ""; loginMode = "pin"; paintLogin();
+  LOGIN_USER = ""; PIN_OK_AT = 0; loginMode = "pin"; paintLogin();
 }
 
 async function fetchDevicePins() {
@@ -2481,10 +2544,13 @@ async function verifyDevicePin(name, enteredPin) {
     }
     return true;
   }
+  if (pinLockedOut()) return false;
   if (stored !== enteredPin.trim()) {
+    pinWrong();
     alert(`Incorrect PIN for ${name}.`);
     return false;
   }
+  pinRight();
   return true;
 }
 
@@ -3508,6 +3574,7 @@ async function closePendingClicked(rowNum) {
   const op = await pendingAuth(true); if (!op) return;
   const p = pendingRows().find(x => x.rowNum === rowNum);
   if (!p) { alert("That shift is no longer on the list. Tap refresh."); return; }
+  if (!(await requirePin("Close as not run", op))) return;
   const reason = (prompt(`Close "${p.product} · Day ${p.day} (${p.date}) · ${p.label}" as NOT RUN?\n\nThis marks the row as finalised so it stops showing as unfinished. Reason (required):`) || "").trim();
   if (reason.length < 3) { alert("A reason is needed to close it."); return; }
   try {
@@ -4888,6 +4955,7 @@ async function closeBatchClicked() {
   const name = LOGIN_USER;
   if (!name) { paintLogin(); return; }
   if (name !== ADMIN_NAME) { alert("Only Admin (" + ADMIN_NAME + ") can close a batch."); return; }
+  if (!(await requirePin("Close batch", name))) return;
   if (!confirm(`Close batch ${base}?\n\nAll days will be merged into one averaged final report and moved out of the working sheet. It will then wait for an invoice number.`)) return;
   closingBusy = true;
   try {
@@ -6616,6 +6684,7 @@ async function verifyVrRow(rowNum, deviceId) {
   }
   const row = S.vrDetailRow;
   if (!row) { alert("Row not found — try refreshing the list."); return; }
+  if (!(await requirePin("Verify this report", S.vrName || LOGIN_USER, true))) return;
   try {
     const newThru = highestFilledProcess(row, row.Product);
     // Block B — Verified By, Verified At, Verified Device ID, Verified Thru Process — is
