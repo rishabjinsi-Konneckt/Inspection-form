@@ -1318,6 +1318,7 @@ function parseProductsFromRows(rows) {
       extruder: {
         od: `${odMin.toFixed(2)}–${odMax.toFixed(2)} mm`, odBands: buildBands(odMin, odMax, odStep, true),
         id: `${idMin.toFixed(2)}–${idMax.toFixed(2)} mm`, idBands: buildBands(idMin, idMax, idStep, true),
+        idLo: idMin, idHi: idMax,
       },
       braiding: {
         od: `${brMin.toFixed(2)}–${brMax.toFixed(2)} mm`, odBands: buildBands(brMin, brMax, brStep, false),
@@ -2752,11 +2753,34 @@ function isBaseProduct(code) {
   const f = PRODUCTS[code] && PRODUCTS[code].flow;
   return !!(f && f.length && f[f.length - 1] === "070");
 }
+// A base product's name is "<hose ID>X<hose OD><material>" (8X12EN, 9.7X13ES …). Its family is the
+// OD + material part (12EN, 13ES …), which is what a finished product's name starts with.
+function baseFamily(code) { return String(code || "").replace(/^\d+(?:\.\d+)?x/i, "").toUpperCase(); }
+function hasIdPrefix(code) { return /^\d+(?:\.\d+)?x/i.test(String(code || "")); }
+// Base products a finished product can reuse (all ID variants of the matching OD + material).
+// Old OD-only rows (12EN …) are retired as soon as ID-split rows exist for the same family.
+function baseCandidates(code) {
+  if (!PRODUCTS[code] || isBaseProduct(code)) return [];
+  const up = String(code).toUpperCase();
+  const bases = Object.keys(PRODUCTS).filter(b => b !== code && isBaseProduct(b));
+  const fams = bases.map(baseFamily).filter(f => up.startsWith(f)).sort((a, b) => b.length - a.length);
+  const fam = fams[0]; if (!fam) return [];
+  let list = bases.filter(b => baseFamily(b) === fam);
+  if (list.some(hasIdPrefix)) list = list.filter(hasIdPrefix);
+  return list;
+}
 function baseProductOf(code) {
-  if (!PRODUCTS[code] || isBaseProduct(code)) return "";
-  // The base product whose code the finished product's name starts with (longest match wins).
-  const hits = Object.keys(PRODUCTS).filter(b => b !== code && isBaseProduct(b) && String(code).startsWith(b));
-  return hits.sort((a, b) => b.length - a.length)[0] || "";
+  const c = baseCandidates(code);
+  return c.length ? baseFamily(c[0]) : "";
+}
+function idRangeOf(code) {
+  const e = PRODUCTS[code] && PRODUCTS[code].extruder;
+  return (e && isFinite(e.idLo) && isFinite(e.idHi)) ? [e.idLo, e.idHi] : null;
+}
+function idOverlaps(finishedCode, baseCode) {
+  const f = idRangeOf(finishedCode), b = idRangeOf(baseCode);
+  if (!f || !b) return true;
+  return b[0] <= f[1] + 1e-9 && b[1] >= f[0] - 1e-9;
 }
 function parseBaseCell(v) {
   const s = String(v || "").trim();
@@ -2778,27 +2802,29 @@ function blockCValues() { return [new Date().toISOString(), ...buildGaugeCols(),
 // Verified base batches that `finishedCode` may reuse, with how many of their allowed uses are
 // taken. Uses = distinct finished batches whose rows name it in the "Base Batch" column.
 function eligibleBaseBatches(finishedCode, reg) {
-  const baseCode = baseProductOf(finishedCode);
-  if (!baseCode) return [];
+  const cands = baseCandidates(finishedCode);
+  if (!cands.length) return [];
   reg = reg || mergedBatchRegistry();
   const used = {};
   Object.keys(reg).forEach(b => {
     const src = reg[b].baseSrc;
     if (src) (used[src] = used[src] || new Set()).add(b);
   });
-  const perDay = (PRODUCTS[baseCode] && PRODUCTS[baseCode].baseReuse) || 4;
   const out = [];
   Object.keys(reg).forEach(b => {
     const e = reg[b];
-    if (e.product !== baseCode) return;
+    if (!cands.includes(e.product)) return;
+    const perDay = (PRODUCTS[e.product] && PRODUCTS[e.product].baseReuse) || 4;
     const r0 = e.rounds && e.rounds[0];
     if (!(r0 && r0.verifiedThru && Number(r0.verifiedThru) >= 70)) return;   // verified through P070 first
     const days = Math.max(1, e.lastDay || 1);
     const allowed = perDay * days;
     const u = used[b] ? used[b].size : 0;
-    out.push({ key: b, days, used: u, allowed, full: u >= allowed, lastDate: e.lastDate || "" });
+    const ir = idRangeOf(e.product);
+    out.push({ key: b, product: e.product, idText: ir ? `ID ${ir[0]}–${ir[1]}` : "", idMismatch: !idOverlaps(finishedCode, e.product),
+      days, used: u, allowed, full: u >= allowed, lastDate: e.lastDate || "" });
   });
-  return out.sort((a, b) => (b.lastDate || "").localeCompare(a.lastDate || "") || a.key.localeCompare(b.key));
+  return out.sort((a, b) => a.product.localeCompare(b.product) || (b.lastDate || "").localeCompare(a.lastDate || "") || a.key.localeCompare(b.key));
 }
 
 // A round "blocks" starting another shift on this same batch when its most recent row used
@@ -3799,7 +3825,7 @@ function rProcess() {
 
 // ── base batch choice, shown before P030 of a new finished-product batch ──
 function rBaseChoice(proc) {
-  const baseCode = baseProductOf(S.product);
+  const baseCode = baseProductOf(S.product);   // family, e.g. 13EN
   const isAdmin = S.operator === SELF_VERIFY_EXEMPT;
   const header = `
     <div class="header">
@@ -3811,8 +3837,10 @@ function rBaseChoice(proc) {
     if (S.sheetBatchReg === null && !S.sheetBatchRegLoading && !S.sheetBatchRegError) refreshSheetBatches();
     const list = S.sheetBatchReg === null ? [] : eligibleBaseBatches(S.product);
     const opts = list.map(b => {
-      const tag = b.full ? (isAdmin ? " — LIMIT REACHED (Admin override)" : " — LIMIT REACHED") : "";
-      return `<option value="${htmlText(b.key)}" ${S.baseSel === b.key ? "selected" : ""} ${b.full && !isAdmin ? "disabled" : ""}>${htmlText(b.key)} · Day ${b.days} · used ${b.used} of ${b.allowed}${tag}</option>`;
+      const tag = (b.full ? (isAdmin ? " — LIMIT REACHED (Admin override)" : " — LIMIT REACHED") : "")
+        + (b.idMismatch ? (isAdmin ? " — ID DOES NOT FIT (Admin override)" : " — ID DOES NOT FIT") : "");
+      const blocked = (b.full || b.idMismatch) && !isAdmin;
+      return `<option value="${htmlText(b.key)}" ${S.baseSel === b.key ? "selected" : ""} ${blocked ? "disabled" : ""}>${htmlText(b.product)} · ${htmlText(b.key)} · ${htmlText(b.idText)} · Day ${b.days} · used ${b.used} of ${b.allowed}${tag}</option>`;
     }).join("");
     reuse = `
       <label>${baseCode} base batch</label>
@@ -3821,7 +3849,7 @@ function rBaseChoice(proc) {
       </select>
       ${S.sheetBatchRegLoading ? `<div style="font-size:12px;color:#64748b;margin-top:8px;">⏳ Loading base batches…</div>` : ""}
       ${!S.sheetBatchRegLoading && !list.length ? `<div class="alert" style="margin-top:10px;">⚠ No verified ${baseCode} base batch is available. A base batch needs Approval Sample verified through Process 070. <span style="text-decoration:underline;cursor:pointer;" onclick="refreshSheetBatches()">↻ refresh</span></div>` : ""}
-      <div style="font-size:11px;color:#94a3b8;margin-top:6px;">Each base batch allows 4 reuses for every day it ran.</div>
+      <div style="font-size:11px;color:#94a3b8;margin-top:6px;">Pick the base whose hose ID range fits ${htmlText(PRODUCTS[S.product].label)} (${htmlText(PRODUCTS[S.product].extruder.id)}). Each base batch allows 4 reuses for every day it ran.</div>
       <button class="btn-primary" onclick="confirmBaseReuse()" ${S.baseSel ? "" : "disabled"}>Use this base batch → start at P080</button>`;
   }
   return `
@@ -3847,6 +3875,11 @@ function confirmBaseReuse() {
   const item = eligibleBaseBatches(S.product).find(b => b.key === key);
   if (!item) { alert("That base batch isn't available any more (it may not be verified yet, or it was closed). Tap refresh and choose again."); return; }
   let override = false;
+  if (item.idMismatch) {
+    if (S.operator !== SELF_VERIFY_EXEMPT) { alert(`Base batch ${key} (${item.product}, ${item.idText}) does not fit ${S.product}'s hose ID range. Choose a base whose ID range overlaps, or make a new batch.`); return; }
+    if (!confirm(`Base ${item.product} (${item.idText}) does not overlap ${S.product}'s hose ID range.\n\nAdmin override: use it anyway? This is recorded on the Sheet.`)) return;
+    override = true;
+  }
   if (item.full) {
     if (S.operator !== SELF_VERIFY_EXEMPT) { alert(`Base batch ${key} has reached its limit (${item.used} of ${item.allowed} uses). Choose another base batch, or make a new one.`); return; }
     if (!confirm(`Base batch ${key} has already been used ${item.used} of ${item.allowed} times.\n\nAdmin override: use it anyway? This is recorded on the Sheet.`)) return;
