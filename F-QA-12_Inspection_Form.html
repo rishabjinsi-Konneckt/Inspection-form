@@ -1891,6 +1891,159 @@ function photoNoteHtml(e) {
   return "";
 }
 
+// ═══════════════════════════════════════════════
+// BRAID PITCH (per machine) — a second photo per machine, taken through a guide camera that
+// keeps the hose flat and at a standard size in the frame. The camera distance does not matter:
+// the AI reports the pitch in HOSE DIAMETERS (visible length ÷ pitch repeats, in diameters), and
+// the app multiplies by that machine's O.D. (its picked O.D. band, else the product's braiding
+// O.D. spec) to get mm. An ESTIMATE only: it warns, never blocks Next.
+// ═══════════════════════════════════════════════
+const PITCH_TOL_MM = 0.15;     // estimate tolerance either side of the spec before warning
+let PITCH_STREAM = null, PITCH_M = null; const PITCH_BUSY = {};
+function parseSpecRange(s) {
+  const m = String(s || "").match(/(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)/);
+  return m ? { lo: +m[1], hi: +m[2] } : null;
+}
+function pitchOdFor(entry) {
+  const sel = parseSelectedRange(entry && entry.label);
+  if (sel && isFinite(sel.lo) && isFinite(sel.hi)) return (sel.lo + sel.hi) / 2;
+  const spec = parseSpecRange(PRODUCTS[S.product] && PRODUCTS[S.product].braiding.od);
+  return spec ? (spec.lo + spec.hi) / 2 : null;
+}
+function pitchMmFrom(ratio, entry) {
+  const od = pitchOdFor(entry);
+  return (od && isFinite(ratio)) ? ratio * od : null;
+}
+function pitchNote(entry, m) {
+  const pt = entry && entry.pit;
+  if (!pt || !pt.photo) return { cls: "", text: "" };
+  if (pt.pending && PITCH_BUSY[m]) return { cls: "", text: "🔍 Measuring pitch…" };
+  if (typeof pt.sharp === "number" && pt.sharp < BLUR_MIN_SHARPNESS) return { cls: "warn", text: "⚠ Pitch photo is blurry — retake" };
+  if (pt.fromSheet && typeof pt.mm !== "number") return { cls: "", text: "" };
+  if (typeof pt.mm !== "number") {
+    if (pt.checked === false) return { cls: "", text: "Pitch photo saved (measurement unavailable)" };
+    return { cls: "warn", text: pt.tilted ? "⚠ Hose looks tilted or curved — retake with the hose flat and its edges on the two lines" : "⚠ Couldn't measure the pitch — retake with the hose flat, braid in focus, edges on the two lines" };
+  }
+  const spec = parseSpecRange(PRODUCTS[S.product] && PRODUCTS[S.product].braiding.pitch);
+  const mm = pt.mm.toFixed(2);
+  if (spec && (pt.mm < spec.lo - PITCH_TOL_MM || pt.mm > spec.hi + PITCH_TOL_MM)) {
+    return { cls: "warn", text: `⚠ Pitch ≈ ${mm} mm (estimate) — spec ${spec.lo.toFixed(2)}–${spec.hi.toFixed(2)} mm. Retake, or tell the verifier` };
+  }
+  return { cls: "ok", text: `✓ Pitch ≈ ${mm} mm (estimate)${spec ? ", within spec" : ""}` };
+}
+function pitchRowHtml(m, entry) {
+  if (!entry || (entry.result !== "PASS" && entry.result !== "FAIL")) {
+    return `<div class="photo-note">📐 Pick the O.D. result first, then take the pitch photo.</div>`;
+  }
+  const pt = entry.pit || {};
+  let badge;
+  if (pt.status === "uploading") badge = `<span class="photo-badge photo-uploading">&#8987; Uploading pitch photo&hellip;</span>`;
+  else if (pt.status === "error") badge = `<span class="photo-badge photo-error">&#9888; Pitch upload failed &middot; tap to retry</span>`;
+  else if (pt.photo) badge = `<span class="photo-badge photo-done">📐 Pitch photo attached &#10003; &middot; tap to retake</span>`;
+  else badge = `<span class="photo-badge">📐 Take pitch photo (guide camera)</span>`;
+  const n = pitchNote(entry, m);
+  const noteHtml = n.text ? `<div class="photo-note ${n.cls === "warn" ? "photo-note-warn" : ""}" ${n.cls === "ok" ? 'style="color:#15803d"' : ""}>${esc(n.text)}</div>` : "";
+  return `<div class="photo-row" onclick="openPitchCam('${m}')">${badge}</div>${noteHtml}`;
+}
+function pitchNativeCam(m) {
+  const inp = document.getElementById(`pitch_braid_${m}`.replace(/[^a-zA-Z0-9_]/g, "_"));
+  if (inp) inp.click();
+}
+function closePitchCam() {
+  if (PITCH_STREAM) { try { PITCH_STREAM.getTracks().forEach(t => t.stop()); } catch (e) {} PITCH_STREAM = null; }
+  const el = document.getElementById("pitch-cam"); if (el && el.parentNode) el.parentNode.removeChild(el);
+}
+async function openPitchCam(m) {
+  PITCH_M = m;
+  saveState();
+  if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) { pitchNativeCam(m); return; }
+  try {
+    PITCH_STREAM = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
+  } catch (e) { pitchNativeCam(m); return; }   // camera blocked: fall back to the ordinary camera, no guide
+  { const old = document.getElementById("pitch-cam"); if (old && old.parentNode) old.parentNode.removeChild(old); }
+  const div = document.createElement("div");
+  div.id = "pitch-cam";
+  div.style.cssText = "position:fixed;left:0;top:0;right:0;bottom:0;background:#000;z-index:10002;display:flex;flex-direction:column;";
+  div.innerHTML = `
+    <div style="position:relative;flex:1;overflow:hidden;">
+      <video id="pitch-video" autoplay playsinline muted style="width:100%;height:100%;object-fit:cover;"></video>
+      <div style="position:absolute;left:0;right:0;top:30%;border-top:3px solid #22c55e;"></div>
+      <div style="position:absolute;left:0;right:0;top:70%;border-top:3px solid #22c55e;"></div>
+      <div style="position:absolute;left:0;right:0;top:12px;text-align:center;color:#fff;font:600 13px system-ui;padding:0 14px;text-shadow:0 1px 3px #000;">
+        ${esc(m)} · Lay the hose flat and level, put its two edges on the green lines, hold the phone straight above it, braid in focus
+      </div>
+    </div>
+    <div style="display:flex;gap:10px;padding:14px;background:#0f172a;">
+      <button class="btn-outline" style="margin-top:0;flex:1;" onclick="pitchCamCancel()">Cancel</button>
+      <button class="btn-primary" style="margin-top:0;flex:2;" onclick="pitchCamCapture()">📐 Capture</button>
+    </div>`;
+  document.body.appendChild(div);
+  const v = document.getElementById("pitch-video");
+  if (v) { v.srcObject = PITCH_STREAM; try { await v.play(); } catch (e) {} }
+}
+function pitchCamCancel() { closePitchCam(); }
+async function pitchCamCapture() {
+  const v = document.getElementById("pitch-video"), m = PITCH_M;
+  if (!v || !v.videoWidth || !m) { closePitchCam(); return; }
+  const c = document.createElement("canvas");
+  c.width = v.videoWidth; c.height = v.videoHeight;
+  c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
+  closePitchCam();
+  c.toBlob(b => { if (b) handlePitchPhoto(m, new File([b], "pitch.jpg", { type: "image/jpeg" })); }, "image/jpeg", 0.92);
+}
+function handlePitchFile(m, inputEl) {
+  const file = inputEl.files[0]; inputEl.value = "";
+  if (file) handlePitchPhoto(m, file);
+}
+async function handlePitchPhoto(m, file) {
+  const b0 = curBraiding()[m] || {};
+  b0.pit = { status: "uploading" };
+  curBraiding()[m] = b0;
+  render();
+  let ok = false;
+  try {
+    const braidProc = buildProcesses(S.product).find(p => p.type === "braiding");
+    const blob = await stampImage(file, braidProc ? photoProcessLabel(braidProc.no, m + " pitch") : "");
+    const url = await uploadToCloudinary(blob, photoContext(`pitch=${m}`));
+    const b1 = curBraiding()[m] || {};
+    b1.pit = { photo: url, status: "done", sharp: blob.sharpness };
+    curBraiding()[m] = b1; ok = true;
+  } catch (err) {
+    const b1 = curBraiding()[m] || {};
+    b1.pit = { status: "error", error: err.message };
+    curBraiding()[m] = b1;
+  }
+  render();
+  silentCheckpoint();
+  if (ok) analyzePitch(m);
+}
+async function analyzePitch(m) {
+  const rd = S.roundData[S.currentRound];
+  const e = rd.braiding[m];
+  if (!e || !e.pit || !e.pit.photo) return;
+  const url = e.pit.photo;
+  e.pit.pending = true; PITCH_BUSY[m] = true; render();
+  try {
+    const res = await fetch("/api/readcaliper", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ imageUrl: url, kind: "pitch" }) });
+    const data = await res.json();
+    const cur = rd.braiding[m];
+    if (!cur || !cur.pit || cur.pit.photo !== url) { delete PITCH_BUSY[m]; return; }
+    delete cur.pit.pending;
+    if (res.ok && typeof data.readable === "boolean") {
+      cur.pit.checked = true; cur.pit.tilted = !!data.tilted; cur.pit.confidence = data.confidence;
+      cur.pit.ratio = data.readable ? data.ratio : null;
+      const mm = data.readable ? pitchMmFrom(data.ratio, cur) : null;
+      cur.pit.mm = (mm !== null && isFinite(mm)) ? Math.round(mm * 100) / 100 : null;
+    } else { cur.pit.checked = false; }
+  } catch (err) {
+    const cur = rd.braiding[m];
+    if (cur && cur.pit) { delete cur.pit.pending; cur.pit.checked = false; }
+  }
+  delete PITCH_BUSY[m];
+  render();
+  silentCheckpoint();
+}
+
 async function checkPhotoReading(kind, key) {
   const rd = S.roundData[S.currentRound];
   const store = kind === "braid" ? rd.braiding : rd.entries;
@@ -2797,7 +2950,7 @@ function baseCellValue() {
   return S.baseSrc ? S.baseSrc + (S.baseOverride ? " | Admin override" : "") : "";
 }
 // Block C values for one save: timestamp, three gauge readings, base batch.
-function blockCValues() { return [new Date().toISOString(), ...buildGaugeCols(), baseCellValue()]; }
+function blockCValues() { return [new Date().toISOString(), ...buildGaugeCols(), baseCellValue(), ...buildPitchCols()]; }
 
 // Verified base batches that `finishedCode` may reuse, with how many of their allowed uses are
 // taken. Uses = distinct finished batches whose rows name it in the "Base Batch" column.
@@ -2877,6 +3030,8 @@ function hydrateRoundFromSheetRows(roundIdx, rows, productKey) {
           const mKey = `BR-${String(i).padStart(2,"0")}`;
           const val = row[`${mKey} O.D.`];
           if (val) rd.braiding[mKey] = { result: inferResultFromLabel(val), label: val === "No Run" ? "No Run" : val, fromSheet: true };
+          const pc = String(row[`${mKey} Pitch`] || "").match(/^\s*([\d.]+|—)\s*\|\s*(https?:\/\/\S+)/);
+          if (pc && rd.braiding[mKey]) rd.braiding[mKey].pit = { photo: pc[2], mm: pc[1] === "—" ? null : parseFloat(pc[1]), status: "done", fromSheet: true };
         }
         return;
       }
@@ -4089,6 +4244,7 @@ function rBraiding(proc) {
         </div>
         ${rPhotoBadge(existing, braidPhotoInputId)}
         ${photoNoteHtml(existing)}
+        ${pitchRowHtml(S.activeBraid, existing)}
         ${lockChipHtml({ braid: S.activeBraid }, existing)}
         <div class="braid-panel-cancel" onclick="S.activeBraid=null;render()">✕ Cancel</div>
       </div>`;
@@ -4108,7 +4264,9 @@ function rBraiding(proc) {
     </div>
     <div class="braid-grid">${cells}</div>
     ${ms.map(m => `<input type="file" accept="image/*" capture="environment" style="display:none"
-        id="${`photo_braid_${m}`.replace(/[^a-zA-Z0-9_]/g, "_")}" onchange="handleBraidPhotoSelect('${m}', this)">`).join("")}
+        id="${`photo_braid_${m}`.replace(/[^a-zA-Z0-9_]/g, "_")}" onchange="handleBraidPhotoSelect('${m}', this)">
+      <input type="file" accept="image/*" capture="environment" style="display:none"
+        id="${`pitch_braid_${m}`.replace(/[^a-zA-Z0-9_]/g, "_")}" onchange="handlePitchFile('${m}', this)">`).join("")}
     ${panel}
     ${tallyHtml}`;
 }
@@ -4699,6 +4857,7 @@ function hasNewProgressToReport() {
 // Verify Reports flow writes, in verifyVrRow(). Kept in its own block, never overlapping
 // Block A, so an operator's save and a verifier's save (possibly from different devices,
 // possibly minutes or days apart) can never collide or overwrite each other.
+const PITCH_COLS = Array.from({length:18}, (_,i) => `BR-${String(i+1).padStart(2,"0")} Pitch`);
 const SHEET_HEADERS = [
   // ── meta ──
   "Date","Product","Batch No.","Shift / Sample","Operator","Device ID","Supervisor","Finalised At",
@@ -4738,7 +4897,9 @@ const SHEET_HEADERS = [
   // ── Block C continued: Process 120 gauge readings (number read from the photo + unit) ──
   "Pressure Testing (P120)","Fitting Load Test (P120)","Air Leakage (P120)",
   // ── Block C continued: base batch this finished batch reuses (blank = ran P030–P070 itself) ──
-  "Base Batch"
+  "Base Batch",
+  // ── Block C continued: per-machine braid pitch — "2.31 | <photo url>" (AI estimate in mm, then the pitch photo) ──
+  ...PITCH_COLS
 ];
 const GAUGE_COLS = ["Pressure Testing (P120)","Fitting Load Test (P120)","Air Leakage (P120)"];
 const GAUGE_COL_BY_CHECK = { "Pressure Testing":"Pressure Testing (P120)", "Fitting Load Test":"Fitting Load Test (P120)", "Air Leakage":"Air Leakage (P120)" };
@@ -4754,7 +4915,7 @@ function colLetter(n) { // 1-indexed column number -> spreadsheet letter(s)
 }
 const LAST_SAVED_COL = colLetter(SHEET_HEADERS.indexOf(LAST_SAVED_COL_NAME) + 1);
 // Block C = Last Saved At + the three gauge readings, written together in one range.
-const BLOCK_C_END_COL = colLetter(SHEET_HEADERS.indexOf(LAST_SAVED_COL_NAME) + 1 + GAUGE_COLS.length + 1);   // + the Base Batch column
+const BLOCK_C_END_COL = colLetter(SHEET_HEADERS.indexOf(LAST_SAVED_COL_NAME) + 1 + GAUGE_COLS.length + 1 + PITCH_COLS.length);   // + Base Batch + the 18 pitch columns
 
 // ═══════════════════════════════════════════════
 // CLOSE BATCH → FINAL REPORT (groundwork for the PDIR)
@@ -5416,7 +5577,7 @@ async function ensureLastSavedHeader() {
     await fetch("/api/submit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "update", range: `${LAST_SAVED_COL}1:${BLOCK_C_END_COL}1`, rows: [[LAST_SAVED_COL_NAME, ...GAUGE_COLS, BASE_COL_NAME]] })
+      body: JSON.stringify({ mode: "update", range: `${LAST_SAVED_COL}1:${BLOCK_C_END_COL}1`, rows: [[LAST_SAVED_COL_NAME, ...GAUGE_COLS, BASE_COL_NAME, ...PITCH_COLS]] })
     });
   } catch (e) { /* best-effort — see comment above */ }
   finally { lastSavedHeaderEnsured = true; }
@@ -5430,6 +5591,22 @@ function buildGaugeCols() {
   const idx = procs.findIndex(p => p.no === "120");
   if (!rd || idx < 0 || idx < (S.reportedThroughIdx || 0) && !(S.touched && S.touched["120"])) return ["", "", ""];
   return ["Pressure Testing", "Fitting Load Test", "Air Leakage"].map(k => (rd.entries[pkey("120", k)] || {}).label || "");
+}
+
+// Per-machine braid pitch cells ("2.31 | url"), windowed like the braiding block itself.
+function buildPitchCols() {
+  const rd = S.roundData[S.currentRound];
+  const blank = Array(18).fill("");
+  if (!rd) return blank;
+  const procs = buildProcesses(S.product);
+  const idx = procs.findIndex(pr => pr.type === "braiding");
+  if (idx >= 0 && idx < (S.reportedThroughIdx || 0) && !(S.touched && S.touched["070"])) return blank;
+  return blank.map((_, i) => {
+    const e = rd.braiding && rd.braiding[`BR-${String(i + 1).padStart(2, "0")}`];
+    const pt = e && e.pit;
+    if (!pt || !pt.photo) return "";
+    return `${typeof pt.mm === "number" ? pt.mm.toFixed(2) : "—"} | ${pt.photo}`;
+  });
 }
 
 // Which Sheet row did an append just create? Google's append reply carries the range under

@@ -39,6 +39,25 @@ function gaugePrompt(unit) {
     '"medium" or "low", "unit_on_display": string, "image_quality": "sharp" or "soft" or "blurry"}';
 }
 
+// Braid pitch photo (per braiding machine). The model is NOT asked for millimetres or pixels: it
+// reports the pitch relative to the hose's own diameter, so the camera distance cancels out. The
+// app multiplies by the machine's O.D. Pitch = axial distance over which one braid wire makes one
+// full turn around the hose (the same wire comes back to the same position).
+const PITCH_PROMPT =
+  'This photo shows a wire-braided hose lying roughly horizontally in the frame. The "pitch" of the ' +
+  'braid is the distance ALONG the hose over which one braid wire makes one full turn (the same wire ' +
+  'comes back to the same position, e.g. the distance between two successive crossings of the same ' +
+  'wire direction on the same line). Do not guess in millimetres. Instead: (1) take the hose diameter ' +
+  '(its width across the image, edge to edge) as 1 unit; (2) choose a stretch of braid in sharp focus ' +
+  'and give its length in hose diameters as visible_length_in_diameters; (3) count how many complete ' +
+  'pitch repeats fit in that stretch as pitch_repeats (a half repeat counts 0.5). Set braid_visible to ' +
+  'false if the braid wires cannot be clearly seen or counted. Set hose_flat_and_straight to false if ' +
+  'the hose is tilted away from the camera, curved, or foreshortened. Rate image_quality "sharp", ' +
+  '"soft" or "blurry". Reply with ONLY a JSON object, no other text: {"braid_visible": true or false, ' +
+  '"hose_flat_and_straight": true or false, "visible_length_in_diameters": number or null, ' +
+  '"pitch_repeats": number or null, "confidence": "high" or "medium" or "low", ' +
+  '"image_quality": "sharp" or "soft" or "blurry"}';
+
 async function withTimeout(ms, fn) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
@@ -82,7 +101,7 @@ async function askAnthropic(apiKey, imageUrl, prompt) {
     headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
       model,
-      max_tokens: 120,
+      max_tokens: 200,
       messages: [{ role: 'user', content: [
         { type: 'image', source: { type: 'url', url: imageUrl } },
         { type: 'text', text: prompt }
@@ -114,7 +133,8 @@ module.exports = async function handler(req, res) {
     const kind = String((req.body && req.body.kind) || 'caliper');
     const unit = String((req.body && req.body.unit) || '');
     const isGauge = kind === 'gauge' && GAUGE_UNITS.includes(unit);
-    const prompt = isGauge ? gaugePrompt(unit) : PROMPT;
+    const isPitch = kind === 'pitch';
+    const prompt = isPitch ? PITCH_PROMPT : (isGauge ? gaugePrompt(unit) : PROMPT);
 
     let text;
     try {
@@ -127,6 +147,18 @@ module.exports = async function handler(req, res) {
     const m = String(text).match(/\{[\s\S]*\}/);
     if (!m) { res.status(502).json({ error: 'Unreadable model reply' }); return; }
     const parsed = JSON.parse(m[0]);
+
+    if (isPitch) {
+      const L = Number(parsed.visible_length_in_diameters), R = Number(parsed.pitch_repeats);
+      const ratio = (isFinite(L) && isFinite(R) && L > 0 && R > 0) ? L / R : null;
+      const confidence = ['high', 'medium', 'low'].includes(parsed.confidence) ? parsed.confidence : 'low';
+      const flat = parsed.hose_flat_and_straight !== false;
+      // pitch / O.D. for real braided hose is roughly 0.1–0.5; anything else is a miscount
+      const plausible = ratio !== null && ratio >= 0.08 && ratio <= 0.6;
+      const readable = parsed.braid_visible === true && flat && plausible && confidence !== 'low' && parsed.image_quality !== 'blurry';
+      res.status(200).json({ readable, ratio: readable ? Math.round(ratio * 10000) / 10000 : null, tilted: !flat, confidence, engine: geminiKey ? 'gemini' : 'anthropic' });
+      return;
+    }
 
     const reading = (typeof parsed.reading === 'number' && isFinite(parsed.reading)) ? parsed.reading : null;
     // Anything short of "sharp" is treated as unreadable so the app cautions "blurry - retake".
