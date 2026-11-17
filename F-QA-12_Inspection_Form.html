@@ -2797,6 +2797,13 @@ function sheetRoundSummary(rowsForRound) {
     lastDate: last.Date || "",
     rowNum:   last.__row,
     verifiedThru: last["Verified Thru Process"] || null,
+    // Best verification reached on ANY day of this round (a multi-day batch has one row per day),
+    // and the date of that row — a base batch counts as verified if any day reached P070.
+    ...(() => {
+      let best = 0, bestDate = "";
+      rowsForRound.forEach(r => { const n = Number(r["Verified Thru Process"]); if (isFinite(n) && n >= best && n > 0) { best = n; bestDate = r.Date || bestDate; } });
+      return { verifiedBest: best || null, verifiedBestDate: bestDate };
+    })(),
     // Did this round's most recent row use "No Run" anywhere? Drives the new-shift gate in
     // findBlockingRound()/roundBlocksNextShift() below — a shift with unverified No-Run
     // entries has to get signed off before another shift on this batch can be started.
@@ -2872,6 +2879,8 @@ function mergedBatchRegistry() {
         rowNum:       (sSummary && sSummary.rowNum) || (lr && lr.rowNum) || null,
         complete:     sSummary ? sSummary.complete : !!(lr && lr.complete),
         verifiedThru: (sSummary && sSummary.verifiedThru) || null,
+        verifiedBest: (sSummary && sSummary.verifiedBest) || null,
+        verifiedBestDate: (sSummary && sSummary.verifiedBestDate) || "",
         hasNoRun:     !!(sSummary && sSummary.hasNoRun),
         knownLocally: !!lr,
         sheetRows:    sRows || null
@@ -2969,13 +2978,17 @@ function eligibleBaseBatches(finishedCode, reg) {
     if (!cands.includes(e.product)) return;
     const perDay = (PRODUCTS[e.product] && PRODUCTS[e.product].baseReuse) || 4;
     const r0 = e.rounds && e.rounds[0];
-    if (!(r0 && r0.verifiedThru && Number(r0.verifiedThru) >= 70)) return;   // verified through P070 first
+    // Verified through P070 on at least one day (the latest day may still be waiting for its verifier).
+    const vBest = Math.max(Number(r0 && r0.verifiedBest) || 0, Number(r0 && r0.verifiedThru) || 0);
+    if (vBest < 70) return;
+    const latestPending = !(Number(r0.verifiedThru) >= 70);
     const days = Math.max(1, e.lastDay || 1);
     const allowed = perDay * days;
     const u = used[b] ? used[b].size : 0;
     const ir = idRangeOf(e.product);
     out.push({ key: b, product: e.product, idText: ir ? `ID ${ir[0]}–${ir[1]}` : "", idMismatch: !idOverlaps(finishedCode, e.product),
-      days, used: u, allowed, full: u >= allowed, lastDate: e.lastDate || "" });
+      days, used: u, allowed, full: u >= allowed, lastDate: e.lastDate || "",
+      verifiedDate: r0.verifiedBestDate || "", latestPending });
   });
   return out.sort((a, b) => a.product.localeCompare(b.product) || (b.lastDate || "").localeCompare(a.lastDate || "") || a.key.localeCompare(b.key));
 }
@@ -3995,7 +4008,7 @@ function rBaseChoice(proc) {
       const tag = (b.full ? (isAdmin ? " — LIMIT REACHED (Admin override)" : " — LIMIT REACHED") : "")
         + (b.idMismatch ? (isAdmin ? " — ID DOES NOT FIT (Admin override)" : " — ID DOES NOT FIT") : "");
       const blocked = (b.full || b.idMismatch) && !isAdmin;
-      return `<option value="${htmlText(b.key)}" ${S.baseSel === b.key ? "selected" : ""} ${blocked ? "disabled" : ""}>${htmlText(b.product)} · ${htmlText(b.key)} · ${htmlText(b.idText)} · Day ${b.days} · used ${b.used} of ${b.allowed}${tag}</option>`;
+      return `<option value="${htmlText(b.key)}" ${S.baseSel === b.key ? "selected" : ""} ${blocked ? "disabled" : ""}>${htmlText(b.product)} · ${htmlText(b.key)} · ${htmlText(b.idText)} · Day ${b.days} · used ${b.used} of ${b.allowed}${b.latestPending ? ` · verified ${htmlText(ddmmyyyy(b.verifiedDate))}, latest day not yet verified` : ""}${tag}</option>`;
     }).join("");
     reuse = `
       <label>${baseCode} base batch</label>
