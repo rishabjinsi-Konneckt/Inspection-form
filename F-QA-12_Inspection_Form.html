@@ -3136,8 +3136,15 @@ function saveWarning() {
 // If Approval Sample hasn't been verified at all yet, the gate still fully applies, exactly
 // like before. This both reports that fact AND snaps S.shift back to Approval Sample if it
 // had drifted onto a locked one.
+// The batch the shift buttons are judged against: the batch card the user tapped (continuing an
+// existing batch, any day), else the NEW batch implied by the Product + Date boxes. Judging a
+// continue against the new-batch name locked every shift but Approval Sample on later days.
+function shiftGateKey() {
+  if (S.selectedBatch && mergedBatchRegistry()[S.selectedBatch]) return S.selectedBatch;
+  return (S.product && S.date) ? genBatchBase(S.date, PRODUCTS[S.product].label) : null;
+}
 function enforceShiftGate() {
-  const base = (S.product && S.date) ? genBatchBase(S.date, PRODUCTS[S.product].label) : null;
+  const base = shiftGateKey();
   const reg  = base ? mergedBatchRegistry()[base] : null;
   const approvalVerified = !!(reg && reg.rounds && reg.rounds[0] && reg.rounds[0].verifiedThru);
   const locked = !!base && !approvalVerified;
@@ -3302,7 +3309,8 @@ function rSetup() {
           // findBlockingRound(). Already-started rounds (including the blocking one itself)
           // stay open, since resuming your own in-progress work is never "starting another
           // shift". Separate from, and stacks with, the Approval-Sample gate above.
-          const batchEntry = batchPreview ? registry[batchPreview] : null;
+          const gateKey = shiftGateKey();
+          const batchEntry = gateKey ? registry[gateKey] : null;
           const blocking = batchEntry ? findBlockingRound(batchEntry) : null;
           return ROUND_LABELS.map((sh,shi) => {
             const approvalLocked = shiftLocked && shi !== 0;
@@ -3322,7 +3330,8 @@ function rSetup() {
       ${shiftLocked ? `<div style="font-size:12px;color:#c2410c;margin-top:6px;">🔒 Approval Sample must be verified by Verify Reports (at least partially) before other shifts unlock.</div>` : ""}
       ${(() => {
         if (shiftLocked) return "";
-        const batchEntry = batchPreview ? registry[batchPreview] : null;
+        const gateKey = shiftGateKey();
+        const batchEntry = gateKey ? registry[gateKey] : null;
         const blocking = batchEntry ? findBlockingRound(batchEntry) : null;
         return blocking ? `<div style="font-size:12px;color:#c2410c;margin-top:6px;">🔒 ${esc(blocking.label)} used "No Run" and isn't fully verified yet — new shifts on this batch are locked until it is.</div>` : "";
       })()}
