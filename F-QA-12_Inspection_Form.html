@@ -4956,7 +4956,7 @@ const FINAL_EXTRA_HEADERS = ["Days Worked","Work Dates","Closed By","Closed At",
 // Gauge columns go AFTER the extras so tabs created before they existed only need columns appended.
 // Digital type-signatures on the Final Inspection Report: who prepared it (the Admin who closed the
 // batch, signed at closing) and who verified it afterwards (a different person, signed with their PIN).
-const FINAL_SIGN_HEADERS = ["Prepared By (QA)","Prepared Signed At","Final Verified By","Final Verified At"];
+const FINAL_SIGN_HEADERS = ["Prepared By (QA)","Prepared Signed At","Final Verified By","Final Verified At","NG Accepted Note"];
 const FINAL_HEADERS = [...SHEET_HEADERS.slice(0, SHEET_DATA_COLS), ...FINAL_EXTRA_HEADERS, ...GAUGE_COLS, ...FINAL_SIGN_HEADERS];
 
 function quoteTab(t) { return "'" + String(t).replace(/'/g, "''") + "'"; }
@@ -5034,7 +5034,22 @@ function closeBlockers(chosen, product) {
 
 function uniqJoin(vals) { return [...new Set(vals.filter(v => !isBlankCell(v)).map(v => String(v).trim()))].join(", "); }
 
-function buildFinalReportRows(base, product, chosen, closedBy, closedAtIso) {
+// Every failed (NG) reading across the rows that will be averaged, so the Admin sees them BEFORE closing.
+const NG_SKIP_HEADERS = new Set(["Date","Product","Batch No.","Shift / Sample","Operator","Device ID","Supervisor","Finalised At","O.D. Spec","I.D. Spec","Braiding Photos"]);
+function findNgReadings(chosen) {
+  const out = [];
+  const cols = [...SHEET_HEADERS.slice(0, SHEET_DATA_COLS), ...GAUGE_COLS];
+  (chosen || []).slice().sort((a, b) => String(a.Date || "").localeCompare(String(b.Date || "")) || ROUND_LABELS.indexOf(a["Shift / Sample"]) - ROUND_LABELS.indexOf(b["Shift / Sample"]))
+    .forEach(r => {
+      cols.forEach(hd => {
+        if (NG_SKIP_HEADERS.has(hd) || isPhotoHeader(hd)) return;
+        const v = String(r[hd] === undefined || r[hd] === null ? "" : r[hd]).trim();
+        if (v && v !== "No Run" && /FAIL|✗|Not Smooth/.test(v)) out.push({ date: r.Date || "", shift: r["Shift / Sample"], check: hd, value: v });
+      });
+    });
+  return out;
+}
+function buildFinalReportRows(base, product, chosen, closedBy, closedAtIso, ngNote) {
   const out = [];
   ROUND_LABELS.forEach(label => {
     const rows = chosen.filter(r => r["Shift / Sample"] === label)
@@ -5057,6 +5072,7 @@ function buildFinalReportRows(base, product, chosen, closedBy, closedAtIso) {
       if (h === "Prepared By (QA)") return closedBy;
       if (h === "Prepared Signed At") return closedAtIso;
       if (h === "Final Verified By" || h === "Final Verified At") return "";
+      if (h === "NG Accepted Note") return ngNote || "";
       if (h === "Pressure Testing Photo (P120)" || h === "Fitting Load Test Photo (P120)" || h === "Air Leakage Photo (P120)") {
         // Photo-only checks: the Sheet stores no reading for these, only the photo (or "No Run"),
         // so the final sheet shows how many days have photo evidence.
@@ -5129,8 +5145,21 @@ async function closeBatchFlow(base, closedBy) {
     const e = new Error("This batch can't be closed yet:\n\n• " + issues.slice(0, 8).join("\n• ") + (issues.length > 8 ? `\n…and ${issues.length - 8} more` : "") + "\n\nEvery shift on every day must be finalised and fully verified.");
     e.userFacing = true; throw e;
   }
+  // Failed (NG) readings are listed first: the Admin must read them and type why the batch is accepted.
+  let ngNote = "";
+  const ngs = findNgReadings(chosen);
+  if (ngs.length) {
+    const lines = ngs.slice(0, 12).map(n => `• ${frDate(n.date)} · ${n.shift} · ${n.check}: ${n.value}`).join("\n");
+    const more = ngs.length > 12 ? `\n…and ${ngs.length - 12} more` : "";
+    if (!confirm(`${ngs.length} failed (NG) reading${ngs.length === 1 ? "" : "s"} in this batch:\n\n${lines}${more}\n\nOK = accept them and continue closing (you will be asked for a reason).\nCancel = don't close.`)) {
+      const e = new Error("Closing cancelled — the batch was not closed."); e.userFacing = true; e.cancelled = true; throw e;
+    }
+    const why = prompt(`Reason for accepting the ${ngs.length} NG reading${ngs.length === 1 ? "" : "s"} (printed on the Final Report):`, "");
+    if (why === null || why.trim().length < 5) { const e = new Error("A reason (at least 5 characters) is needed to close a batch with NG readings. The batch was not closed."); e.userFacing = true; e.cancelled = true; throw e; }
+    ngNote = why.trim().slice(0, 300);
+  }
   const closedAt = new Date().toISOString();
-  const finalRows = buildFinalReportRows(base, product, chosen, closedBy, closedAt);
+  const finalRows = buildFinalReportRows(base, product, chosen, closedBy, closedAt, ngNote);
 
   // 2. Write the two new tabs (idempotent if a previous attempt got part-way).
   showBusy("Closing batch… preparing tabs");
@@ -5413,6 +5442,7 @@ function rFinalSheet() {
             Measured values: <b>average (days run / days worked)</b> · pass/fail checks: <b>OK count</b> · NR = No Run on some days ·
             <span class="fr-sw fr-ok">all OK</span> <span class="fr-sw fr-ng">any NG</span> <span class="fr-sw fr-nr">No Run</span>
           </div>
+          ${f["NG Accepted Note"] ? `<div class="fr-ngnote"><b>NG accepted by ${htmlText(finalSignInfo(f).prep || "Admin")}:</b> ${htmlText(f["NG Accepted Note"])}</div>` : ""}
           <div class="fr-sign">
             ${(() => { const sg = finalSignInfo(f); return frSignBox("Prepared by (QA)", sg.prep, sg.prepAt) + frSignBox("Verified by", sg.ver, sg.verAt); })()}<div><span>Approved by</span></div>
           </div>
@@ -5453,6 +5483,7 @@ function rFinalSheet() {
       .fr-sign{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:14px;page-break-inside:avoid;}
       .fr-sign div{height:46px;border-bottom:1.5px solid #94a3b8;position:relative;}
       .fr-sign span{position:absolute;bottom:-15px;left:0;font-size:10px;color:#64748b;}
+      .fr-ngnote{margin-top:8px;font-size:11px;color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:6px 10px;}
       .fr-sig{position:absolute;left:4px;bottom:14px;font:italic 22px "Snell Roundhand","Segoe Script","Brush Script MT","Lucida Handwriting",cursive;color:#1e3a8a;}
       .fr-sigat{position:absolute;left:4px;bottom:2px;font-size:9px;color:#475569;font-style:normal;}
       .fr-await{position:absolute;left:4px;bottom:8px;font-size:11px;color:#c2410c;font-style:italic;}
