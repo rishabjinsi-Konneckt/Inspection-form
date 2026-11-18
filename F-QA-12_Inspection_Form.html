@@ -6677,10 +6677,24 @@ async function vrReadAllPhotos(row) {
 // Records the verifier's Approve/Not Approve choice for one process on the review screen.
 // Keyed by process number, reset fresh every time a row is opened (see openVrDetail()) so a
 // stale choice from a previous row's review can never leak into this one.
+// Does this process on the row contain a failed (NG) reading? Only the Admin may approve one.
+function vrProcHasNg(row, proc) {
+  const product = PRODUCTS[row.Product];
+  if (!product || !proc) return false;
+  if (proc.type === "braiding") {
+    const n = product.braiding.machines;
+    return Array.from({length:n}, (_,i) => row[`BR-${String(i+1).padStart(2,"0")} O.D.`]).some(v => v && /FAIL|✗/.test(v));
+  }
+  return proc.checks.some(c => { const v = vrSheetValue(row, proc.no, c.key); return !!v && vrJudge(v).lbl === "NG"; });
+}
 function setVrApproval(procNo, approved) {
   if (!S.vrApprovals) S.vrApprovals = {};
   if (approved) {
     const proc = buildProcesses(S.vrDetailRow.Product).find(p => p.no === procNo);
+    if (proc && vrProcHasNg(S.vrDetailRow, proc) && S.vrName !== SELF_VERIFY_EXEMPT) {
+      alert("This process has a failed (NG) reading. Only the Admin can approve it — tap Not Approve and ask the Admin to verify this report.");
+      return;
+    }
     const items = proc ? vrProcPhotos(S.vrDetailRow, proc) : [];
     if (!vrProcReady(items)) { alert("Open every photo for this process first (a missing photo can't be approved)."); return; }
     const issues = items.map(vrPhotoIssue).filter(Boolean);
@@ -6853,8 +6867,11 @@ function rVrDetail() {
     newProcNos.push(proc.no);
     const state = S.vrApprovals[proc.no]; // true = Approved, false = Not Approved, undefined = undecided
     const items = vrProcPhotos(row, proc);
-    const ready = vrProcReady(items);
+    const hasNg = vrProcHasNg(row, proc);
+    const ngBlocked = hasNg && S.vrName !== SELF_VERIFY_EXEMPT;
+    const ready = vrProcReady(items) && !ngBlocked;
     const photoHtml = vrPhotoHtml(items);
+    const ngNote = hasNg ? `<div style="font-size:12px;margin:2px 0 8px;padding:7px 10px;border-radius:8px;background:#fee2e2;color:#b91c1c;font-weight:600;">${ngBlocked ? "🚫 Contains a failed (NG) reading — only the Admin can approve this process. Tap Not Approve and ask the Admin to verify." : "⚠ Contains a failed (NG) reading — approving it as Admin accepts that result."}</div>` : "";
     return `<div style="margin-bottom:10px;border:1px solid #e9d5ff;border-radius:10px;padding:10px 12px;background:#faf5ff;">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
         <div class="sum-proc">Process ${proc.no} · ${esc(proc.machine)} <span class="badge b-na" style="background:#fff;color:#7c3aed;">🆕 New</span></div>
@@ -6865,6 +6882,7 @@ function rVrDetail() {
             style="padding:6px 12px;border-radius:8px;border:1.5px solid ${state===false?"#dc2626":"#cbd5e1"};background:${state===false?"#fee2e2":"#fff"};color:${state===false?"#b91c1c":"#475569"};font-size:12px;font-weight:700;cursor:pointer;">✗ Not Approve</button>
         </div>
       </div>
+      ${ngNote}
       ${detailHtml}
       ${photoHtml}
     </div>`;
