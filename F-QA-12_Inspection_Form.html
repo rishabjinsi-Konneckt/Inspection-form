@@ -4954,7 +4954,10 @@ const ARCHIVE_TAB = "Closed Batches";
 const ADMIN_NAME  = SELF_VERIFY_EXEMPT; // "Rishab (Admin)"
 const FINAL_EXTRA_HEADERS = ["Days Worked","Work Dates","Closed By","Closed At","Invoice No.","Invoice Entered By","Invoice Entered At"];
 // Gauge columns go AFTER the extras so tabs created before they existed only need columns appended.
-const FINAL_HEADERS = [...SHEET_HEADERS.slice(0, SHEET_DATA_COLS), ...FINAL_EXTRA_HEADERS, ...GAUGE_COLS];
+// Digital type-signatures on the Final Inspection Report: who prepared it (the Admin who closed the
+// batch, signed at closing) and who verified it afterwards (a different person, signed with their PIN).
+const FINAL_SIGN_HEADERS = ["Prepared By (QA)","Prepared Signed At","Final Verified By","Final Verified At"];
+const FINAL_HEADERS = [...SHEET_HEADERS.slice(0, SHEET_DATA_COLS), ...FINAL_EXTRA_HEADERS, ...GAUGE_COLS, ...FINAL_SIGN_HEADERS];
 
 function quoteTab(t) { return "'" + String(t).replace(/'/g, "''") + "'"; }
 function isBlankCell(v) { return v === undefined || v === null || String(v).trim() === ""; }
@@ -5051,6 +5054,9 @@ function buildFinalReportRows(base, product, chosen, closedBy, closedAtIso) {
       if (h === "Closed By") return closedBy;
       if (h === "Closed At") return closedAtIso;
       if (h === "Invoice No." || h === "Invoice Entered By" || h === "Invoice Entered At") return "";
+      if (h === "Prepared By (QA)") return closedBy;
+      if (h === "Prepared Signed At") return closedAtIso;
+      if (h === "Final Verified By" || h === "Final Verified At") return "";
       if (h === "Pressure Testing Photo (P120)" || h === "Fitting Load Test Photo (P120)" || h === "Air Leakage Photo (P120)") {
         // Photo-only checks: the Sheet stores no reading for these, only the photo (or "No Run"),
         // so the final sheet shows how many days have photo evidence.
@@ -5214,6 +5220,7 @@ function closedBatchesHtml() {
       <div style="display:flex;justify-content:space-between;gap:8px;"><div style="font-weight:700;font-size:14px;">${label}</div><div style="font-size:11px;color:#64748b;">${b}</div></div>
       <div style="font-size:12px;color:#64748b;margin-top:2px;">${f["Days Worked"] || "?"} day(s) · closed ${closedOn} by ${f["Closed By"] || "—"}</div>
       <div style="margin-top:6px;font-size:12px;font-weight:700;color:${finished ? "#15803d" : "#c2410c"};">${finished ? "Invoice " + inv + " · PDIR ready" : "Invoice number missing"}</div>
+      <div style="margin-top:3px;font-size:11px;color:${finalSignInfo(f).ver ? "#15803d" : "#c2410c"};">${finalSignInfo(f).ver ? "✍ Verified by " + htmlText(finalSignInfo(f).ver) : "✍ Final report awaiting verifier signature (prepared by " + htmlText(finalSignInfo(f).prep || "—") + ")"}</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
         ${finished
           ? `<button class="btn-outline" style="width:auto;flex:1;margin:0;padding:9px 6px;font-size:12px;" onclick="openFinalSheet('${esc(b)}')">📄 View final sheet</button>
@@ -5234,6 +5241,48 @@ function closedBatchesHtml() {
       <div style="font-weight:700;font-size:15px;margin-bottom:8px;">✅ Finished batches</div>
       ${finished.map(b => card(b, true)).join("")}
     </div>` : ""}`;
+}
+
+// ── Digital type-signatures on the Final Inspection Report ──
+// Prepared by = whoever closed the batch (older closed batches: the "Closed By"/"Closed At" cells).
+function finalSignInfo(f) {
+  const prep = String(f["Prepared By (QA)"] || f["Closed By"] || "").trim();
+  const prepAt = String(f["Prepared Signed At"] || f["Closed At"] || "").trim();
+  const ver = String(f["Final Verified By"] || "").trim();
+  const verAt = String(f["Final Verified At"] || "").trim();
+  return { prep, prepAt, ver, verAt };
+}
+async function verifyFinalClicked(base) {
+  const name = LOGIN_USER;
+  if (!name) { paintLogin(); return; }
+  try {
+    await ensureTab(FINAL_TAB, FINAL_HEADERS);   // makes sure the signature header cells exist
+    const data = await readTab(FINAL_TAB);
+    const rows = (data.rows || []).filter(r => r["Batch No."] === base);
+    if (!rows.length) { alert("This batch wasn't found in Final Reports."); return; }
+    const s = finalSignInfo(rows[0]);
+    if (s.ver) { alert(`This report is already verified by ${s.ver}.`); return; }
+    if (name === s.prep) { alert("You prepared this report — someone else needs to verify it."); return; }
+    if (!(await requirePin("Sign as verifier", name, true))) return;
+    if (!confirm(`Sign the Final Inspection Report for ${base} as verifier?\n\nYour name and the time will be type-signed on the report. This cannot be undone.`)) return;
+    const c0 = FINAL_HEADERS.indexOf("Final Verified By");
+    const stamp = new Date().toISOString();
+    showBusy("Signing final report…");
+    for (const r of rows) {
+      await sheetApi({ mode: "update", range: `${quoteTab(FINAL_TAB)}!${colLetter(c0 + 1)}${r.__row}:${colLetter(c0 + 2)}${r.__row}`, rows: [[name, stamp]] });
+    }
+    hideBusy();
+    alert(`Final report for ${base} verified and signed by ${name}.`);
+  } catch (e) {
+    hideBusy();
+    alert("Couldn't sign the report: " + (e && e.message ? e.message : e));
+  } finally {
+    refreshSheetBatches();
+  }
+}
+function frSignBox(label, name, at) {
+  if (!name) return `<div><span>${label}</span><em class="fr-await">Awaiting verification</em></div>`;
+  return `<div><b class="fr-sig">${htmlText(name)}</b><em class="fr-sigat">Digitally signed · ${htmlText(ddmmyyyyTime(at) || "")}</em><span>${label}</span></div>`;
 }
 
 async function invoiceClicked(base) {
@@ -5291,6 +5340,9 @@ function rFinalSheet() {
   const back = `<button class="btn-outline no-print" onclick="S.screen='setup';render()">← Back</button>`;
   if (!rows.length) return `<div class="header"><h1>📄 Final report</h1></div>${back}<div class="alert">Final report not found — go back and refresh.</div>`;
   const f = rows[0];
+  const signState = finalSignInfo(f);
+  const verifyBtn = (!signState.ver && LOGIN_USER && LOGIN_USER !== signState.prep)
+    ? `<button class="btn-primary no-print" onclick="verifyFinalClicked('${esc(S.finalSheetBase)}')">✍ Sign as verifier</button>` : "";
   const product = PRODUCTS[f.Product];
   const procs = product ? buildProcesses(f.Product) : [];
   const byShift = {}; rows.forEach(r => { byShift[r["Shift / Sample"]] = r; });
@@ -5362,7 +5414,7 @@ function rFinalSheet() {
             <span class="fr-sw fr-ok">all OK</span> <span class="fr-sw fr-ng">any NG</span> <span class="fr-sw fr-nr">No Run</span>
           </div>
           <div class="fr-sign">
-            <div><span>Prepared by (QA)</span></div><div><span>Verified by</span></div><div><span>Approved by</span></div>
+            ${(() => { const sg = finalSignInfo(f); return frSignBox("Prepared by (QA)", sg.prep, sg.prepAt) + frSignBox("Verified by", sg.ver, sg.verAt); })()}<div><span>Approved by</span></div>
           </div>
         </td></tr>
       </tbody>
@@ -5401,6 +5453,9 @@ function rFinalSheet() {
       .fr-sign{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:14px;page-break-inside:avoid;}
       .fr-sign div{height:46px;border-bottom:1.5px solid #94a3b8;position:relative;}
       .fr-sign span{position:absolute;bottom:-15px;left:0;font-size:10px;color:#64748b;}
+      .fr-sig{position:absolute;left:4px;bottom:14px;font:italic 22px "Snell Roundhand","Segoe Script","Brush Script MT","Lucida Handwriting",cursive;color:#1e3a8a;}
+      .fr-sigat{position:absolute;left:4px;bottom:2px;font-size:9px;color:#475569;font-style:normal;}
+      .fr-await{position:absolute;left:4px;bottom:8px;font-size:11px;color:#c2410c;font-style:italic;}
       .fr-sign{margin-bottom:22px;}
       @page finalreport{size:A4 landscape;margin:7mm;}
       @page{size:A4 landscape;margin:7mm;}   /* this style block only exists while the final report is on screen, so other screens still print as before */
@@ -5420,6 +5475,7 @@ function rFinalSheet() {
       @media (max-width:760px){.fr-chips{grid-template-columns:repeat(2,minmax(0,1fr));} .fr-banner{flex-wrap:wrap;} .fr-tbl{font-size:10px;}}
     </style>
   </div>
+  ${verifyBtn}
   <button class="btn-primary no-print" onclick="window.print()">🖨 Print / Save as PDF</button>
   ${back}`;
 }
