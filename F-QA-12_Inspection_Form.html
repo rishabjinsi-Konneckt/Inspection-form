@@ -4982,7 +4982,7 @@ function parseReadingNumber(v) {
 
 // Averages one check across the days a shift was worked. `values` = that check's cell from
 // each day's row (blank cells already removed). Returns the text for the final sheet.
-function aggregateReading(values) {
+function aggregateReading(values, hideNg) {
   const total = values.length;
   if (!total) return "";
   const ran = values.filter(v => String(v).trim() !== "No Run");
@@ -4994,11 +4994,11 @@ function aggregateReading(values) {
     let dec = Math.max(...parsed.map(p => p.dec));
     if (dec === 0 && Math.abs(mean - Math.round(mean)) > 1e-9) dec = 1;
     const ng = parsed.filter(p => p.fail).length;
-    return `${mean.toFixed(dec)} (${ran.length}/${total})` + (ng ? ` · NG ${ng}` : "");
+    return `${mean.toFixed(dec)} (${ran.length}/${total})` + (ng && !hideNg ? ` · NG ${ng}` : "");
   }
   const ng = ran.filter(v => /FAIL|✗|Not Smooth|NG/.test(String(v))).length;
   const ok = ran.length - ng;
-  return `OK ${ok}/${total}` + (ng ? ` · NG ${ng}` : "") + (noRun ? ` · No Run ${noRun}` : "");
+  return `OK ${ok}/${total}` + (ng && !hideNg ? ` · NG ${ng}` : "") + (noRun ? ` · No Run ${noRun}` : "");
 }
 
 function nonBlankCount(r) { return Object.keys(r).filter(k => k !== "__row" && !isBlankCell(r[k])).length; }
@@ -5084,7 +5084,9 @@ function buildFinalReportRows(base, product, chosen, closedBy, closedAtIso, ngNo
         return `Photo ${photos}/${rows.length}` + (nr ? ` · No Run ${nr}` : "");
       }
       if (isPhotoHeader(h) || h === "Braiding Photos") return "";
-      return aggregateReading(rows.map(r => r[h]).filter(v => !isBlankCell(v)));
+      // hideNg: the saved Final Report carries plain averages; failed readings stay in the Closed
+      // Batches tab (raw daily rows) and are covered by the "NG Accepted Note" written at closing.
+      return aggregateReading(rows.map(r => r[h]).filter(v => !isBlankCell(v)), true);
     });
     out.push(line);
   });
@@ -5354,6 +5356,8 @@ const FR_PROC_COLORS = {
   "060":["#cffafe","#0e7490"], "070":["#e2e8f0","#334155"], "080":["#fce7f3","#be185d"],
   "090":["#dcfce7","#15803d"], "100":["#ffedd5","#c2410c"], "120":["#e0e7ff","#4338ca"], "130":["#d1fae5","#047857"]
 };
+// Final reports saved before NG counts were dropped still carry "· NG n" in their cells; never show it.
+function frStripNg(v) { return (v === null || v === undefined) ? v : String(v).replace(/\s*·\s*NG\s*\d+/g, ""); }
 function frCellClass(v) {
   const t = String(v === null || v === undefined ? "" : v).trim();
   if (!t) return "fr-empty";
@@ -5383,7 +5387,7 @@ function rFinalSheet() {
     const [bg, ac] = FR_PROC_COLORS[proc.no] || ["#f1f5f9", "#475569"];
     const lines = [];
     const add = (label, getter) => {
-      lines.push(`<tr><td class="fr-l" style="border-left:3px solid ${ac};">${label}</td>${shifts.map(sh => { const v = getter(byShift[sh]); return `<td class="${frCellClass(v)}">${cell(v === null || v === undefined || v === "" ? v : String(v).replace(/ · No Run (\d+)/, " · NR $1"))}</td>`; }).join("")}</tr>`);
+      lines.push(`<tr><td class="fr-l" style="border-left:3px solid ${ac};">${label}</td>${shifts.map(sh => { const v = frStripNg(getter(byShift[sh])); return `<td class="${frCellClass(v)}">${cell(v === null || v === undefined || v === "" ? v : String(v).replace(/ · No Run (\d+)/, " · NR $1"))}</td>`; }).join("")}</tr>`);
     };
     if (proc.type === "braiding") {
       const n = product.braiding.machines;
@@ -5440,7 +5444,7 @@ function rFinalSheet() {
         <tr><td class="fr-bare" colspan="${shifts.length + 1}">
           <div class="fr-legend">
             Measured values: <b>average (days run / days worked)</b> · pass/fail checks: <b>OK count</b> · NR = No Run on some days ·
-            <span class="fr-sw fr-ok">all OK</span> <span class="fr-sw fr-ng">any NG</span> <span class="fr-sw fr-nr">No Run</span>
+            <span class="fr-sw fr-ok">all OK</span>  <span class="fr-sw fr-nr">No Run</span>
           </div>
           ${f["NG Accepted Note"] ? `<div class="fr-ngnote"><b>NG accepted by ${htmlText(finalSignInfo(f).prep || "Admin")}:</b> ${htmlText(f["NG Accepted Note"])}</div>` : ""}
           <div class="fr-sign">
