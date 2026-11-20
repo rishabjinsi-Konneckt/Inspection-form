@@ -3364,6 +3364,7 @@ function rSetup() {
       </div>
       <button class="btn-outline" style="background:#fff7ed;color:#c2410c;border-color:#f97316;" onclick="continueBatchClicked()">↻ Continue This Batch →</button>
       <button class="btn-outline" style="background:#eff6ff;color:#1d4ed8;border-color:#2563eb;" onclick="viewBatchReportClicked()">📄 View Full Report (All Shifts)</button>
+      <button class="btn-outline" style="background:#ecfeff;color:#0e7490;border-color:#06b6d4;" onclick="pdirOpenClicked()">📋 PDIR — readings verified so far</button>
       <button class="btn-outline" style="background:#f1f5f9;color:#334155;border-color:#94a3b8;" onclick="closeBatchClicked()">🔒 Close Batch — Admin only</button>
     </div>` : (S.sheetBatchRegLoading ? `<div style="text-align:center;font-size:12px;color:#94a3b8;margin-top:4px;">Checking for batches from other devices…</div>` : "")}
     ${closedBatchesHtml()}
@@ -5391,16 +5392,30 @@ function nutLengthFor(code) {
 function pdirDefaults(base, product) {
   const nut = nutLengthFor(product);
   const lo = (PRODUCTS[product] && parseSpecRange(PRODUCTS[product].cutting && PRODUCTS[product].cutting.len)) || null;
-  return { customer: "", partName: "", partNo: "", qty: "", date: today(),
+  return { customer: "", partName: "", partNo: "", qty: "", date: today(), invoice: "",
     nutMm: nut === null ? "" : String(nut), lenMin: (lo && nut !== null) ? String(Math.round(lo.lo + 2 * nut)) : "" };
 }
 function pdirDetails(base, product) {
   return { ...pdirDefaults(base, product), ...(pdirSaved()[base] || {}) };
 }
-function openPdir(base) { S.pdirBase = base; S.screen = "pdirform"; render(); }
+function openPdir(base) { S.pdirBase = base; S.pdirOpen = false; S.screen = "pdirform"; render(); }
+// PDIR for a batch that is still open (Continue Existing Batch): uses the readings verified so far.
+function pdirOpenClicked() {
+  const base = S.selectedBatch;
+  if (!base) { alert("Select a batch from the list first."); return; }
+  S.pdirBase = base; S.pdirOpen = true; S.screen = "pdirform"; render();
+}
+// Product / invoice for the PDIR, whether the batch is closed (Final Reports row) or still open.
+function pdirContext(base) {
+  const f = (closedBatchGroups()[base] || [])[0];
+  if (f && !S.pdirOpen) return { f, product: f.Product, closed: true, inv: groupInvoice(closedBatchGroups()[base] || []) };
+  const reg = mergedBatchRegistry()[base];
+  if (S.pdirOpen && reg) return { f: null, product: reg.product, closed: false, inv: "" };
+  return null;
+}
 function pdirFormSave(base) {
   const val = id => { const el = document.getElementById(id); return el ? String(el.value || "").trim() : ""; };
-  const d = { customer: val("pd-customer"), partName: val("pd-part"), partNo: val("pd-partno"), qty: val("pd-qty"), date: val("pd-date"), nutMm: val("pd-nut"), lenMin: val("pd-lenmin") };
+  const d = { customer: val("pd-customer"), partName: val("pd-part"), partNo: val("pd-partno"), qty: val("pd-qty"), date: val("pd-date"), invoice: val("pd-invoice"), nutMm: val("pd-nut"), lenMin: val("pd-lenmin") };
   const all = pdirSaved(); all[base] = d;
   try { localStorage.setItem(PDIR_STORE, JSON.stringify(all)); } catch (e) {}
   return d;
@@ -5411,6 +5426,7 @@ function pdirGenerate() {
   if (!d.customer || !d.partName || !d.partNo || !d.qty || !d.date) { alert("Fill in customer, part name, part no., dispatch qty and dispatch date."); return; }
   if (!(parseFloat(d.nutMm) > 0)) { alert("Enter the nut length in mm (needed for the Length line)."); return; }
   if (!(parseFloat(d.lenMin) > 0)) { alert("Enter the minimum length spec in mm."); return; }
+  if (S.pdirOpen && !d.invoice) { alert("Enter the invoice number (this batch is not closed yet, so it has none on file)."); return; }
   S.screen = "pdir"; render();
   loadPdirData(base);
 }
@@ -5422,13 +5438,21 @@ async function loadPdirData(base) {
     const arch = (await readTab(ARCHIVE_TAB)).rows || [];
     let live = null;
     const getLive = async () => { if (live === null) { const r = await fetch("/api/log", { cache: "no-store" }); live = ((await r.json().catch(() => ({}))).rows) || []; } return live; };
-    let rows = batchRowsFromSheet(arch, base).all;
-    if (!rows.length) rows = batchRowsFromSheet(await getLive(), base).all;
-    if (!rows.length) throw new Error("No daily readings found for this batch.");
+    let rows;
+    if (S.pdirOpen) {
+      // Open batch: the daily rows still in the working sheet. Only rows a verifier has signed off at
+      // least partway count, and each reading is used only up to the process that row is verified through.
+      rows = batchRowsFromSheet(await getLive(), base).all.filter(r => String(r["Verified Thru Process"] || "").trim());
+      if (!rows.length) throw new Error("No verified readings yet for this batch — a verifier must verify at least one process first.");
+    } else {
+      rows = batchRowsFromSheet(arch, base).all;
+      if (!rows.length) rows = batchRowsFromSheet(await getLive(), base).all;
+      if (!rows.length) throw new Error("No daily readings found for this batch.");
+    }
     let baseRows = [];
     const bc = rows.map(r => parseBaseCell(r[BASE_COL_NAME]).src).find(Boolean);
-    if (bc) baseRows = [...batchRowsFromSheet(arch, bc).all, ...batchRowsFromSheet(await getLive(), bc).all];
-    S.pdirData[base] = { rows, baseRows, loaded: true };
+    if (bc) baseRows = [...batchRowsFromSheet(arch, bc).all, ...batchRowsFromSheet(await getLive(), bc).all].filter(r => !S.pdirOpen || String(r["Verified Thru Process"] || "").trim());
+    S.pdirData[base] = { rows, baseRows, loaded: true, verifiedOnly: !!S.pdirOpen };
   } catch (e) { S.pdirData[base] = { error: e.message || String(e) }; }
   if (S.screen === "pdir" && S.pdirBase === base) render();
 }
@@ -5440,9 +5464,14 @@ function pickSpread(list, n) {
   if (list.length <= n) return list.slice();
   return Array.from({ length: n }, (_, i) => list[Math.round(i * (list.length - 1) / (n - 1))]);
 }
-function pdirReadings(rows, header) {
+// verifiedOnly (open batch): a reading counts only if its row is verified through that process.
+function pdirVerifiedFor(r, procNo, verifiedOnly) {
+  return !verifiedOnly || (Number(r["Verified Thru Process"]) >= Number(procNo));
+}
+function pdirReadings(rows, header, procNo, verifiedOnly) {
   const out = [];
   pdirSortRows(rows).forEach(r => {
+    if (!pdirVerifiedFor(r, procNo, verifiedOnly)) return;
     const v = String(r[header] === undefined || r[header] === null ? "" : r[header]).trim();
     if (!v || v === "No Run") return;
     const p = parseReadingNumber(v);
@@ -5450,9 +5479,10 @@ function pdirReadings(rows, header) {
   });
   return out;
 }
-function pdirFlags(rows, header) {   // pass/fail cells → [{ok}]
+function pdirFlags(rows, header, procNo, verifiedOnly) {   // pass/fail cells → [{ok}]
   const out = [];
   pdirSortRows(rows).forEach(r => {
+    if (!pdirVerifiedFor(r, procNo, verifiedOnly)) return;
     const v = String(r[header] === undefined || r[header] === null ? "" : r[header]).trim();
     if (!v || v === "No Run") return;
     out.push({ ok: !/FAIL|✗|Not Smooth|NG/.test(v) });
@@ -5461,7 +5491,7 @@ function pdirFlags(rows, header) {   // pass/fail cells → [{ok}]
 }
 const pdirNum = x => String(+x.toFixed(2));
 function pdirCompute(details, data) {
-  const rows = data.rows || [], N = 5;
+  const rows = data.rows || [], N = 5, vo = !!data.verifiedOnly;
   const nut = parseFloat(details.nutMm), lenMin = parseFloat(details.lenMin);
   const numLine = (no, desc, spec, instr, readings, show, okFn) => {
     const pick = pickSpread(readings, N);
@@ -5477,39 +5507,42 @@ function pdirCompute(details, data) {
     return { no, desc, spec, instr, obs, remark: !pick.length ? "—" : (pick.every(f => f.ok) ? "Ok" : "Not OK"), ok: pick.length ? pick.every(f => f.ok) : null };
   };
   const lines = [];
-  lines.push(numLine(1, "Working Pressure (Hydro-Pneumatic)", "15 Kgf/cm² Min.", "Hydronumetic Tester", pdirReadings(rows, "Pressure Testing (P120)"), r => pdirNum(r.n), r => !r.fail && r.n >= 15));
-  lines.push(numLine(2, "Length", "≥" + lenMin, "Measuring Scale", pdirReadings(rows, "Length"), r => pdirNum(r.n + 2 * nut), r => (r.n + 2 * nut) >= lenMin - 1e-9));
-  lines.push(numLine(3, "Air Drop Leakage Test", "5 Kgf/cm² Min.", "Line Testing Machine", pdirReadings(rows, "Air Leakage (P120)"), r => pdirNum(r.n), r => !r.fail && r.n >= 5));
-  const leak = pdirFlags(rows, "Leakage (P060)");
+  lines.push(numLine(1, "Working Pressure (Hydro-Pneumatic)", "15 Kgf/cm² Min.", "Hydronumetic Tester", pdirReadings(rows, "Pressure Testing (P120)", "120", vo), r => pdirNum(r.n), r => !r.fail && r.n >= 15));
+  lines.push(numLine(2, "Length", "≥" + lenMin, "Measuring Scale", pdirReadings(rows, "Length", "090", vo), r => pdirNum(r.n + 2 * nut), r => (r.n + 2 * nut) >= lenMin - 1e-9));
+  lines.push(numLine(3, "Air Drop Leakage Test", "5 Kgf/cm² Min.", "Line Testing Machine", pdirReadings(rows, "Air Leakage (P120)", "120", vo), r => pdirNum(r.n), r => !r.fail && r.n >= 5));
+  const leak = pdirFlags(rows, "Leakage (P060)", "060", vo);
   const pneu = pickSpread(leak, N);
   const pObs = pneu.map(f => f.ok ? "3.00" : "NG"); while (pObs.length < N) pObs.push("—");
   lines.push({ no: 4, desc: "Working Pressure (Pneumatic)", spec: "2.5 Kgf/cm² Min.", instr: "AIR COMRESSOR", obs: pObs, remark: !pneu.length ? "—" : (pneu.every(f => f.ok) ? "Ok" : "Not OK"), ok: pneu.length ? pneu.every(f => f.ok) : null });
-  lines.push(numLine(5, "Fitting Load Test", "55~70 KgF @20 Minutes", "Tensile Machine", pdirReadings(rows, "Fitting Load Test (P120)"), r => pdirNum(r.n), r => !r.fail && r.n >= 55));
-  let tens = pdirReadings(rows, "Tensile (P030)");
-  if (!tens.length && data.baseRows && data.baseRows.length) tens = pdirReadings(data.baseRows, "Tensile (P030)");
+  lines.push(numLine(5, "Fitting Load Test", "55~70 KgF @20 Minutes", "Tensile Machine", pdirReadings(rows, "Fitting Load Test (P120)", "120", vo), r => pdirNum(r.n), r => !r.fail && r.n >= 55));
+  let tens = pdirReadings(rows, "Tensile (P030)", "030", vo);
+  if (!tens.length && data.baseRows && data.baseRows.length) tens = pdirReadings(data.baseRows, "Tensile (P030)", "030", vo);
   lines.push(numLine(6, "Rubber Tensile", "≤35", "Tensile Machine", tens, r => pdirNum(r.n), r => !r.fail));
   lines.push({ no: 7, desc: "Color", spec: "Grey", instr: "Visually", obs: Array(N).fill("Ok"), remark: "Ok", ok: true });
-  lines.push(flagLine(8, "Appearance", "Loose Fitting, Wire Cut, Black spot on Fittings not allowed", "Visually", pdirFlags(rows, "Appearance (P130)"), "Ok", "NG"));
+  lines.push(flagLine(8, "Appearance", "Loose Fitting, Wire Cut, Black spot on Fittings not allowed", "Visually", pdirFlags(rows, "Appearance (P130)", "130", vo), "Ok", "NG"));
   const accepted = lines.every(l => l.ok === true);
-  return { lines, accepted, missing: lines.filter(l => l.ok === null).map(l => l.desc) };
+  const rejected = lines.some(l => l.ok === false);
+  return { lines, accepted, rejected, pending: !accepted && !rejected, missing: lines.filter(l => l.ok === null).map(l => l.desc) };
 }
 
 function rPdirForm() {
   const base = S.pdirBase;
-  const f = (closedBatchGroups()[base] || [])[0];
+  const ctx = pdirContext(base);
   const back = `<button class="btn-outline" onclick="S.screen='setup';render()">← Back</button>`;
-  if (!f) return `<div class="header"><h1>📋 PDIR</h1></div>${back}<div class="alert">Batch not found — go back and refresh.</div>`;
+  if (!ctx) return `<div class="header"><h1>📋 PDIR</h1></div>${back}<div class="alert">Batch not found — go back and refresh.</div>`;
+  const f = { Product: ctx.product };
   const d = pdirDetails(base, f.Product);
   const inp = (id, label, v, type) => `<label>${label}</label><input id="${id}" type="${type || "text"}" value="${esc(v).replace(/"/g, "&quot;")}" style="width:100%;padding:12px 13px;border:2px solid #e2e8f0;border-radius:10px;font-size:14px;outline:none;">`;
   return `
     <div class="header"><h1>📋 Pre-Dispatch Inspection Report</h1><p>${htmlText(f.Product)} · ${htmlText(base)}</p></div>
     <div class="card">
-      <div style="font-size:13px;color:#64748b;margin-bottom:6px;">Invoice no. and batch no. fill in automatically. Enter the dispatch details:</div>
+      <div style="font-size:13px;color:#64748b;margin-bottom:6px;">${ctx.closed ? "Invoice no. and batch no. fill in automatically. Enter the dispatch details:" : "This batch is still open — the PDIR uses the readings verified so far. Enter the dispatch details:"}</div>
       ${inp("pd-customer", "Customer name", d.customer)}
       ${inp("pd-part", "Part name", d.partName)}
       ${inp("pd-partno", "Part no.", d.partNo)}
       ${inp("pd-qty", "Dispatch qty (e.g. 7000EA)", d.qty)}
       ${inp("pd-date", "Dispatch date", d.date, "date")}
+      ${ctx.closed ? "" : inp("pd-invoice", "Invoice no.", d.invoice)}
       ${inp("pd-nut", "Nut length (mm) — from the product code", d.nutMm, "number")}
       ${inp("pd-lenmin", "Minimum length spec (mm)", d.lenMin, "number")}
       <button class="btn-primary" onclick="pdirGenerate()">Generate PDIR →</button>
@@ -5519,17 +5552,18 @@ function rPdirForm() {
 
 function rPdir() {
   const base = S.pdirBase;
-  const f = (closedBatchGroups()[base] || [])[0];
+  const ctx = pdirContext(base);
   const back = `<button class="btn-outline no-print" onclick="S.screen='setup';render()">← Back</button>`;
-  if (!f) return `<div class="header"><h1>📋 PDIR</h1></div>${back}<div class="alert">Batch not found — go back and refresh.</div>`;
+  if (!ctx) return `<div class="header"><h1>📋 PDIR</h1></div>${back}<div class="alert">Batch not found — go back and refresh.</div>`;
+  const f = ctx.f || { Product: ctx.product };
   const dd = (S.pdirData || {})[base];
   const edit = `<button class="btn-outline no-print" onclick="S.screen='pdirform';render()">✎ Edit details</button>`;
   if (!dd || dd.loading) return `<div class="header"><h1>📋 PDIR</h1></div><div class="card" style="text-align:center;color:#64748b;">⏳ Reading the batch's daily readings…</div>${back}`;
   if (dd.error) return `<div class="header"><h1>📋 PDIR</h1></div><div class="alert">⚠ ${htmlText(dd.error)}</div><button class="btn-primary no-print" onclick="loadPdirData('${esc(base)}')">Try again</button>${back}`;
   const d = pdirDetails(base, f.Product);
   const res = pdirCompute(d, dd);
-  const inv = groupInvoice(closedBatchGroups()[base] || []);
-  const sg = effFinalSign(f, base);
+  const inv = ctx.closed ? ctx.inv : (d.invoice || "");
+  const sg = ctx.closed ? effFinalSign(f, base) : { prep: topPerson(dd.rows, "Device ID"), ver: topPerson(dd.rows, "Verified By") };
   const dispDate = (() => { const m = String(d.date).match(/^(\d{4})-(\d{2})-(\d{2})$/); if (!m) return d.date; return `${parseInt(m[3], 10)} ${["January","February","March","April","May","June","July","August","September","October","November","December"][parseInt(m[2], 10) - 1]} ${m[1]}`; })();
   const accents = ["#0ea5e9", "#f59e0b", "#8b5cf6", "#14b8a6", "#ec4899", "#f97316", "#64748b", "#22c55e"];
   const tint = ["#e0f2fe", "#fef3c7", "#ede9fe", "#ccfbf1", "#fce7f3", "#ffedd5", "#f1f5f9", "#dcfce7"];
@@ -5545,6 +5579,7 @@ function rPdir() {
   return `
   ${missing}
   <div class="pd-root">
+    ${ctx.closed ? "" : `<div class="pd-open">BATCH STILL OPEN — readings verified up to ${htmlText(new Date().toLocaleDateString("en-GB").replace(/\//g, "-"))}</div>`}
     <div class="pd-top">
       <img class="pd-logo" src="${KONNECKT_LOGO}" alt="Konneckt Hoses">
       <div class="pd-title">PRE- DISPATCH INSPECTION REPORT</div>
@@ -5563,7 +5598,7 @@ function rPdir() {
     <div class="pd-sign">
       <div>${sg.prep ? `<b class="pd-sig">${htmlText(sg.prep)}</b>` : ""}<span>PREPARED BY</span></div>
       <div>${sg.ver ? `<b class="pd-sig">${htmlText(sg.ver)}</b>` : ""}<span>CHECKED BY</span></div>
-      <div><b class="pd-final ${res.accepted ? "pd-pass" : "pd-fail"}">${res.accepted ? "ACCEPTED" : "REJECTED"}</b><span>ACCEPTED / REJECTED</span></div>
+      <div><b class="pd-final ${res.accepted ? "pd-pass" : res.rejected ? "pd-fail" : "pd-na"}">${res.accepted ? "ACCEPTED" : res.rejected ? "REJECTED" : "PENDING"}</b><span>ACCEPTED / REJECTED</span></div>
     </div>
     <style>
       .pd-root{font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#0f172a;background:#fff;border-radius:14px;padding:14px;box-shadow:0 2px 14px rgba(15,23,42,.08);page:pdir;}
@@ -5583,6 +5618,7 @@ function rPdir() {
       .pd-tbl .pd-obs{font-weight:700;font-size:13px;} .pd-tbl .pd-bad{color:#b91c1c;background:#fee2e2;}
       .pd-tbl .pd-rem{padding:6px 3px;}
       .pd-pill{display:inline-block;padding:3px 12px;border-radius:999px;font-weight:800;font-size:12px;}
+      .pd-open{margin-bottom:8px;text-align:center;font-size:12px;font-weight:800;letter-spacing:.5px;color:#92400e;background:#fef3c7;border:1.5px solid #f59e0b;border-radius:8px;padding:5px 10px;}
       .pd-pass{background:#dcfce7;color:#166534;border:1.5px solid #16a34a;} .pd-fail{background:#fee2e2;color:#991b1b;border:1.5px solid #dc2626;} .pd-na{background:#f1f5f9;color:#64748b;border:1.5px solid #cbd5e1;}
       .pd-sign{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:26px;}
       .pd-sign div{height:50px;border-bottom:1.5px solid #94a3b8;position:relative;}
