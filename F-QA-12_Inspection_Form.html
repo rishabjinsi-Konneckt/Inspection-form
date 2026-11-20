@@ -5275,10 +5275,12 @@ function closedBatchesHtml() {
         ${finished
           ? `<button class="btn-outline" style="width:auto;flex:1;margin:0;padding:9px 6px;font-size:12px;" onclick="openFinalSheet('${esc(b)}')">📄 View final sheet</button>
              <button class="btn-outline" style="width:auto;flex:1;margin:0;padding:9px 6px;font-size:12px;background:#ecfeff;color:#0e7490;border-color:#06b6d4;" onclick="openPdir('${esc(b)}')">📋 PDIR</button>
-             <button class="btn-outline" style="width:auto;flex:1;margin:0;padding:9px 6px;font-size:12px;" onclick="invoiceClicked('${esc(b)}')">✎ Edit invoice (Admin)</button>`
+             <button class="btn-outline" style="width:auto;flex:1;margin:0;padding:9px 6px;font-size:12px;" onclick="invoiceClicked('${esc(b)}')">✎ Edit invoice (Admin)</button>
+             ${LOGIN_USER === ADMIN_NAME ? `<button class="btn-outline" style="width:auto;flex:1;margin:0;padding:9px 6px;font-size:12px;background:#fff7ed;color:#c2410c;border-color:#f97316;" onclick="reopenBatchClicked('${esc(b)}')">↩ Reopen (Admin)</button>` : ""}`
           : `<button class="btn-primary" style="width:auto;flex:1.4;margin:0;padding:9px 6px;font-size:12px;" onclick="invoiceClicked('${esc(b)}')">Enter invoice number</button>
              <button class="btn-outline" style="width:auto;flex:1;margin:0;padding:9px 6px;font-size:12px;" onclick="openFinalSheet('${esc(b)}')">📄 View final sheet</button>
-             <button class="btn-outline" style="width:auto;flex:1;margin:0;padding:9px 6px;font-size:12px;background:#ecfeff;color:#0e7490;border-color:#06b6d4;" onclick="openPdir('${esc(b)}')">📋 PDIR</button>`}
+             <button class="btn-outline" style="width:auto;flex:1;margin:0;padding:9px 6px;font-size:12px;background:#ecfeff;color:#0e7490;border-color:#06b6d4;" onclick="openPdir('${esc(b)}')">📋 PDIR</button>
+             ${LOGIN_USER === ADMIN_NAME ? `<button class="btn-outline" style="width:auto;flex:1;margin:0;padding:9px 6px;font-size:12px;background:#fff7ed;color:#c2410c;border-color:#f97316;" onclick="reopenBatchClicked('${esc(b)}')">↩ Reopen (Admin)</button>` : ""}`}
       </div></div>`;
   };
   const waiting  = bases.filter(b => !groupInvoice(groups[b]));
@@ -5650,6 +5652,126 @@ function rPdir() {
   <button class="btn-primary no-print" onclick="window.print()">🖨 Print / Save as PDF</button>
   ${edit}
   ${back}`;
+}
+
+
+// ═══════════════════════════════════════════════
+// REOPEN A CLOSED BATCH (Admin only) — the reverse of closeBatchFlow().
+// The daily rows move back from "Closed Batches" into Sheet1 and the batch's rows are removed from
+// "Final Reports" (so its averages, signatures and invoice number go away and it is closed again later).
+// The Admin may tick specific shifts to UN-VERIFY: a verified shift can't be edited, so a shift that
+// needs a corrected reading must lose its verification first, then be edited by its preparer and verified
+// again. Nothing is deleted until the rows are back in Sheet1 and read back with the expected count.
+// ═══════════════════════════════════════════════
+let reopenBusy = false;
+function closeReopenModal() { const m = document.getElementById("reopen-modal"); if (m && m.parentNode) m.parentNode.removeChild(m); window.__reopen = null; }
+async function reopenBatchClicked(base) {
+  if (reopenBusy) return;
+  const name = LOGIN_USER;
+  if (!name) { paintLogin(); return; }
+  if (name !== ADMIN_NAME) { alert("Only Admin (" + ADMIN_NAME + ") can reopen a batch."); return; }
+  if (!(await requirePin("Reopen batch", name, true))) return;
+  try {
+    showBusy("Reading the batch…");
+    const arch = (await readTab(ARCHIVE_TAB)).rows || [];
+    const rows = pdirSortRows(batchRowsFromSheet(arch, base).all);
+    const fin = ((await readTab(FINAL_TAB)).rows || []).filter(r => r["Batch No."] === base);
+    hideBusy();
+    if (!fin.length) { alert("This batch isn't in Final Reports, so it isn't closed."); return; }
+    if (!rows.length) { alert("The daily rows for this batch weren't found in the Closed Batches tab, so it can't be reopened automatically."); return; }
+    window.__reopen = { base, rows };
+    const div = document.createElement("div");
+    div.id = "reopen-modal";
+    div.style.cssText = "position:fixed;left:0;top:0;right:0;bottom:0;background:rgba(15,23,42,.6);z-index:10001;display:flex;align-items:center;justify-content:center;padding:16px;";
+    div.innerHTML = `
+      <div style="background:#fff;border-radius:14px;padding:18px;max-width:460px;width:100%;max-height:90vh;overflow:auto;">
+        <div style="font-size:16px;font-weight:800;margin-bottom:4px;">↩ Reopen batch ${htmlText(base)}</div>
+        <div style="font-size:12px;color:#b45309;margin-bottom:10px;">The final report, its signatures and the invoice number will be removed. The daily rows go back to the working sheet, and the batch must be closed again afterwards.</div>
+        <div style="font-size:13px;font-weight:700;margin-bottom:4px;">Which shifts need a correction? <span style="font-weight:400;color:#64748b;">(tick to remove their verification so they can be edited; leave all blank to only reopen)</span></div>
+        <div style="max-height:220px;overflow:auto;border:1px solid #e2e8f0;border-radius:8px;padding:6px 8px;">
+          ${rows.map((r, i) => `<label style="display:flex;gap:8px;align-items:center;font-size:12.5px;padding:4px 0;"><input type="checkbox" id="rm-chk-${i}"> ${htmlText(frDate(r.Date))} · ${htmlText(r["Shift / Sample"])} · ${htmlText(r["Device ID"] || "—")} · V-${htmlText(r["Verified Thru Process"] || "—")}</label>`).join("")}
+        </div>
+        <label>Reason for reopening</label>
+        <input id="rm-reason" type="text" placeholder="e.g. Fitting load typed wrongly on 13-11" style="width:100%;padding:12px 13px;border:2px solid #e2e8f0;border-radius:10px;font-size:14px;outline:none;">
+        <div style="display:flex;gap:10px;margin-top:14px;">
+          <button class="btn-outline" style="margin-top:0;flex:1;" onclick="closeReopenModal()">Cancel</button>
+          <button class="btn-primary" style="margin-top:0;flex:1.4;" onclick="reopenGo()">Reopen batch</button>
+        </div>
+      </div>`;
+    document.body.appendChild(div);
+  } catch (e) { hideBusy(); alert("Couldn't read the batch: " + (e && e.message ? e.message : e)); }
+}
+async function reopenGo() {
+  const rp = window.__reopen; if (!rp || reopenBusy) return;
+  const reasonEl = document.getElementById("rm-reason");
+  const reason = reasonEl ? String(reasonEl.value || "").trim() : "";
+  if (reason.length < 5) { alert("Please type the reason for reopening (at least 5 characters)."); return; }
+  const unverify = new Set();
+  rp.rows.forEach((r, i) => { const c = document.getElementById("rm-chk-" + i); if (c && c.checked) unverify.add(i); });
+  const base = rp.base;
+  closeReopenModal();
+  reopenBusy = true;
+  try {
+    const r = await reopenBatchFlow(base, unverify, reason, LOGIN_USER);
+    hideBusy();
+    alert(`Batch ${base} is reopened.\\n\\n${r.rows} daily row${r.rows === 1 ? "" : "s"} are back in the working sheet${r.unverified ? ` (${r.unverified} shift${r.unverified === 1 ? "" : "s"} un-verified for correction)` : ""}.\\nFind it under Continue Existing Batch. Close it again when ready.`);
+  } catch (e) {
+    hideBusy();
+    console.error("reopenBatch failed:", e);
+    alert(e.userFacing ? e.message : "Couldn't reopen the batch: " + (e && e.message ? e.message : e));
+  } finally {
+    reopenBusy = false;
+    refreshSheetBatches();
+  }
+}
+async function deleteTabRows(tab, rows, expectBase) {
+  for (let i = 0; i < rows.length; i += 150) {
+    await sheetApi({ mode: "deleteRows", tab, rows: rows.slice(i, i + 150).map(r => ({ row: r.__row, batchNo: r["Batch No."] })) });
+  }
+}
+async function reopenBatchFlow(base, unverify, reason, admin) {
+  // 1. Fresh reads — never trust cached copies for something that moves and deletes rows.
+  showBusy("Reopening… reading the batch");
+  const arch0 = (await readTab(ARCHIVE_TAB)).rows || [];
+  const rows = pdirSortRows(batchRowsFromSheet(arch0, base).all);
+  if (!rows.length) { const e = new Error("The daily rows weren't found in the Closed Batches tab."); e.userFacing = true; throw e; }
+  const fin0 = ((await readTab(FINAL_TAB)).rows || []).filter(r => r["Batch No."] === base);
+  if (!fin0.length) { const e = new Error("This batch isn't in Final Reports, so it isn't closed."); e.userFacing = true; throw e; }
+  const liveRes = await fetch("/api/log", { cache: "no-store" });
+  const live = (await liveRes.json().catch(() => ({}))).rows || [];
+  if (!liveRes.ok) throw new Error("Couldn't read the working sheet.");
+  if (batchRowsFromSheet(live, base).all.length) { const e = new Error("This batch already has rows in the working sheet, so it can't be reopened again."); e.userFacing = true; throw e; }
+
+  // 2. Put the daily rows back in Sheet1 (un-verified where the Admin asked).
+  const b0 = SHEET_HEADERS.indexOf("Verified By");
+  const out = rows.map((r, i) => {
+    const vals = SHEET_HEADERS.map(hd => (r[hd] === undefined || r[hd] === null) ? "" : String(r[hd]));
+    if (unverify.has(i)) for (let k = 0; k < 4; k++) vals[b0 + k] = "";
+    return vals;
+  });
+  showBusy("Reopening… restoring daily rows");
+  await sheetApi({ rows: out });
+
+  // 3. Read back — only continue if every row is there.
+  showBusy("Reopening… checking the copy");
+  const back = batchRowsFromSheet(((await (await fetch("/api/log", { cache: "no-store" })).json().catch(() => ({}))).rows) || [], base).all.length;
+  if (back !== rows.length) throw new Error(`Copy check failed (working sheet ${back}/${rows.length}). Nothing was removed from Closed Batches or Final Reports — ask the admin to check Sheet1 for duplicates before trying again.`);
+
+  // 4. Remove the final report rows, then the archived copies (re-read first so row numbers are current).
+  showBusy("Reopening… removing the final report");
+  const fin = ((await readTab(FINAL_TAB)).rows || []).filter(r => r["Batch No."] === base);
+  await deleteTabRows(FINAL_TAB, fin);
+  showBusy("Reopening… clearing the archive copy");
+  const arch = batchRowsFromSheet((await readTab(ARCHIVE_TAB)).rows || [], base).all;
+  await deleteTabRows(ARCHIVE_TAB, arch);
+
+  // 5. Audit trail in the Edit Log tab.
+  try {
+    const q = editQueue();
+    q.push([new Date().toISOString(), today(), base, "(all shifts)", "—", "Batch reopened", "Closed", "", "Open", unverify.size ? `${unverify.size} shift(s) un-verified` : "", reason, admin, admin]);
+    saveEditQueue(q); flushEditLog();
+  } catch (e) { /* audit is best-effort */ }
+  return { rows: rows.length, unverified: unverify.size };
 }
 
 // ── Final sheet screen (read-only, printable) ──
