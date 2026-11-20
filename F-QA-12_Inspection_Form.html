@@ -5591,7 +5591,7 @@ function rPdir() {
       <tr><td class="pd-k">PRODUCT</td><td class="pd-v">${htmlText(f.Product)}</td><td class="pd-k">SAMPLE SIZE</td><td class="pd-v" colspan="2">5</td><td class="pd-k">DISPATCH DATE</td><td class="pd-v">${htmlText(dispDate)}</td></tr>
     </table>
     <table class="pd-tbl">
-      <colgroup><col style="width:5%"><col style="width:21%"><col style="width:22%"><col style="width:15%"><col style="width:6.5%"><col style="width:6.5%"><col style="width:6.5%"><col style="width:6.5%"><col style="width:6.5%"><col style="width:9%"></colgroup>
+      <colgroup><col style="width:4%"><col style="width:17%"><col style="width:14%"><col style="width:12%"><col style="width:8.6%"><col style="width:8.6%"><col style="width:8.6%"><col style="width:8.6%"><col style="width:8.6%"><col style="width:10%"></colgroup>
       <thead><tr><th>S.NO</th><th>DESCRIPTION</th><th>SPECIFICATION</th><th>INSTRUMENT/ EQUIPMENT</th><th>1</th><th>2</th><th>3</th><th>4</th><th>5</th><th>REMARKS</th></tr></thead>
       <tbody>${rowsHtml}</tbody>
     </table>
@@ -5612,12 +5612,14 @@ function rPdir() {
       .pd-info .pd-v{font-weight:800;color:#0f172a;background:#fff;}
       .pd-tbl{width:100%;table-layout:fixed;border-collapse:collapse;margin-top:10px;font-size:13px;}
       .pd-tbl th{background:linear-gradient(#1e3a8a,#1e40af);color:#fff;padding:8px 4px;font-size:11.5px;border:1px solid #1e3a8a;}
-      .pd-tbl td{border:1px solid #cbd5e1;padding:8px 5px;text-align:center;vertical-align:middle;word-break:break-word;}
+      .pd-tbl td{border:1px solid #cbd5e1;padding:8px 5px;text-align:center;vertical-align:middle;overflow-wrap:break-word;}
+      .pd-tbl td.pd-obs,.pd-tbl td.pd-rem,.pd-tbl td.pd-no{white-space:nowrap;}
+      .pd-tbl{min-width:780px;} .pd-info{min-width:780px;} .pd-root{overflow-x:auto;}
       .pd-tbl .pd-no{font-weight:800;font-size:14px;} .pd-tbl .pd-desc{font-weight:700;text-align:left;font-size:13.5px;padding-left:8px;}
-      .pd-tbl .pd-spec{font-size:13px;color:#1e293b;} .pd-tbl .pd-ins{font-size:13px;color:#334155;}
+      .pd-tbl .pd-spec{font-size:12.5px;color:#1e293b;} .pd-tbl .pd-ins{font-size:12.5px;color:#334155;}
       .pd-tbl .pd-obs{font-weight:700;font-size:13px;} .pd-tbl .pd-bad{color:#b91c1c;background:#fee2e2;}
       .pd-tbl .pd-rem{padding:6px 3px;}
-      .pd-pill{display:inline-block;padding:3px 12px;border-radius:999px;font-weight:800;font-size:12px;}
+      .pd-pill{display:inline-block;white-space:nowrap;padding:3px 12px;border-radius:999px;font-weight:800;font-size:12px;}
       .pd-open{margin-bottom:8px;text-align:center;font-size:12px;font-weight:800;letter-spacing:.5px;color:#92400e;background:#fef3c7;border:1.5px solid #f59e0b;border-radius:8px;padding:5px 10px;}
       .pd-pass{background:#dcfce7;color:#166534;border:1.5px solid #16a34a;} .pd-fail{background:#fee2e2;color:#991b1b;border:1.5px solid #dc2626;} .pd-na{background:#f1f5f9;color:#64748b;border:1.5px solid #cbd5e1;}
       .pd-sign{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:26px;}
@@ -5630,7 +5632,8 @@ function rPdir() {
       .pd-root{max-width:900px;margin-left:auto;margin-right:auto;}
       .pd-tbl tr{page-break-inside:avoid;}
       @media print{
-        .pd-root{box-shadow:none;padding:0;max-width:none;width:100%;}
+        .pd-root{box-shadow:none;padding:0;max-width:none;width:100%;overflow:visible;}
+        .pd-tbl,.pd-info{min-width:0;}
         body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
         .pd-top{padding:8px 12px;} .pd-logo{width:56px;height:56px;} .pd-title{font-size:17px;}
         .pd-fmt{font-size:8.5pt;}
@@ -5641,7 +5644,7 @@ function rPdir() {
         .pd-pill{font-size:9.5pt;padding:2px 8px;}
         .pd-sign{margin-top:34px;} .pd-sign span{font-size:8.5pt;} .pd-final{font-size:13pt;}
       }
-      @media (max-width:760px){ .pd-root{overflow-x:auto;} .pd-top{flex-wrap:wrap;} .pd-title{font-size:15px;} .pd-tbl{min-width:640px;} .pd-info{min-width:640px;} }
+      @media (max-width:760px){ .pd-top{flex-wrap:wrap;} .pd-title{font-size:15px;} }
     </style>
   </div>
   <button class="btn-primary no-print" onclick="window.print()">🖨 Print / Save as PDF</button>
