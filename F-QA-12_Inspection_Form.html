@@ -5375,7 +5375,7 @@ async function invoiceClicked(base) {
 // PDIR — Pre-Dispatch Inspection Report (F-QA-03), built from a CLOSED batch.
 // Eight lines, each with 5 observations picked evenly across the batch's real daily readings:
 //   1 Working pressure (hydro-pneumatic) = P120 Pressure Testing      2 Length = P090 length + 2 × nut
-//   3 Air drop leakage = P120 Air Leakage       4 Working pressure (pneumatic) = 3.00 when P060 leakage is OK
+//   3 Air drop leakage = P120 Air Leakage       4 Working pressure (pneumatic) = 3.00 when the P060 Pressure check (72 PSI) is OK
 //   5 Fitting load = P120 Fitting Load Test     6 Rubber tensile = P030 Tensile (from the base batch if reused)
 //   7 Colour = Grey                              8 Appearance = P130
 // The daily readings come from the Closed Batches tab. Nothing here is written to the Sheet.
@@ -5512,7 +5512,7 @@ function pdirCompute(details, data) {
   lines.push(numLine(1, "Working Pressure (Hydro-Pneumatic)", "15 Kgf/cm² Min.", "Hydronumetic Tester", pdirReadings(rows, "Pressure Testing (P120)", "120", vo), r => pdirNum(r.n), r => !r.fail && r.n >= 15));
   lines.push(numLine(2, "Length", "≥" + lenMin, "Measuring Scale", pdirReadings(rows, "Length", "090", vo), r => pdirNum(r.n + 2 * nut), r => (r.n + 2 * nut) >= lenMin - 1e-9));
   lines.push(numLine(3, "Air Drop Leakage Test", "5 Kgf/cm² Min.", "Line Testing Machine", pdirReadings(rows, "Air Leakage (P120)", "120", vo), r => pdirNum(r.n), r => !r.fail && r.n >= 5));
-  const leak = pdirFlags(rows, "Leakage (P060)", "060", vo);
+  const leak = pdirFlags(rows, "Pressure (P060)", "060", vo);
   const pneu = pickSpread(leak, N);
   const pObs = pneu.map(f => f.ok ? "3.00" : "NG"); while (pObs.length < N) pObs.push("—");
   lines.push({ no: 4, desc: "Working Pressure (Pneumatic)", spec: "2.5 Kgf/cm² Min.", instr: "AIR COMRESSOR", obs: pObs, remark: !pneu.length ? "—" : (pneu.every(f => f.ok) ? "Ok" : "Not OK"), ok: pneu.length ? pneu.every(f => f.ok) : null });
