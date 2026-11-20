@@ -5513,7 +5513,9 @@ function pdirCompute(details, data) {
   lines.push(numLine(1, "Working Pressure (Hydro-Pneumatic)", "15 Kgf/cm² Min.", "Hydronumetic Tester", pdirReadings(rows, "Pressure Testing (P120)", "120", vo), r => pdirNum(r.n), r => !r.fail && r.n >= 15));
   lines.push(numLine(2, "Length", "≥" + lenMin, "Measuring Scale", pdirReadings(rows, "Length", "090", vo), r => pdirNum(r.n + 2 * nut), r => (r.n + 2 * nut) >= lenMin - 1e-9));
   lines.push(numLine(3, "Air Drop Leakage Test", "5 Kgf/cm² Min.", "Line Testing Machine", pdirReadings(rows, "Air Leakage (P120)", "120", vo), r => pdirNum(r.n), r => !r.fail && r.n >= 5));
-  const leak = pdirFlags(rows, "Pressure (P060)", "060", vo);
+  // A batch that reused a base batch has no P060 of its own — the pressure check lives on the base batch's rows.
+  let leak = pdirFlags(rows, "Pressure (P060)", "060", vo);
+  if (!leak.length && data.baseRows && data.baseRows.length) leak = pdirFlags(data.baseRows, "Pressure (P060)", "060", vo);
   const pneu = pickSpread(leak, N);
   const pObs = pneu.map(f => f.ok ? "3.00" : "NG"); while (pObs.length < N) pObs.push("—");
   lines.push({ no: 4, desc: "Working Pressure (Pneumatic)", spec: "2.5 Kgf/cm² Min.", instr: "AIR COMRESSOR", obs: pObs, remark: !pneu.length ? "—" : (pneu.every(f => f.ok) ? "Ok" : "Not OK"), ok: pneu.length ? pneu.every(f => f.ok) : null });
