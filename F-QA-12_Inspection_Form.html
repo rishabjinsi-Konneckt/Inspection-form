@@ -5511,7 +5511,8 @@ function pdirCompute(details, data) {
   };
   const lines = [];
   lines.push(numLine(1, "Working Pressure (Hydro-Pneumatic)", "15 Kgf/cm² Min.", "Hydronumetic Tester", pdirReadings(rows, "Pressure Testing (P120)", "120", vo), r => pdirNum(r.n), r => !r.fail && r.n >= 15));
-  lines.push(numLine(2, "Length", "≥" + lenMin, "Measuring Scale", pdirReadings(rows, "Length", "090", vo), r => pdirNum(r.n + 2 * nut), r => (r.n + 2 * nut) >= lenMin - 1e-9));
+  // Length spec is fixed at > 455 mm on every PDIR.
+  lines.push(numLine(2, "Length", "> 455 mm", "Measuring Scale", pdirReadings(rows, "Length", "090", vo), r => pdirNum(r.n + 2 * nut), r => (r.n + 2 * nut) > 455));
   lines.push(numLine(3, "Air Drop Leakage Test", "5 Kgf/cm² Min.", "Line Testing Machine", pdirReadings(rows, "Air Leakage (P120)", "120", vo), r => pdirNum(r.n), r => !r.fail && r.n >= 5));
   // Working pressure (pneumatic) always reads 3.00 Kgf/cm² (the set point) in all five columns. The only
   // exception: if a P060 Pressure check on this batch (or its base batch) was recorded as FAILED, that
