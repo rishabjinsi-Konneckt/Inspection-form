@@ -5381,6 +5381,7 @@ async function invoiceClicked(base) {
 // The daily readings come from the Closed Batches tab. Nothing here is written to the Sheet.
 // ═══════════════════════════════════════════════
 const PDIR_STORE = "fqa12_pdir_v1";
+const PDIR_FIT_MIN = 40;   // Fitting Load Test: any reading at or above this (kgf) is OK — no upper limit
 function pdirSaved() { try { return JSON.parse(localStorage.getItem(PDIR_STORE) || "{}"); } catch (e) { return {}; } }
 // Nut length from the product code: the LAST letter before the number is the nut type —
 // B = brass nut 10.70 mm; N = nylon nut 15.70 mm, or 18.70 mm when the code ends in -19.
@@ -5516,7 +5517,7 @@ function pdirCompute(details, data) {
   const pneu = pickSpread(leak, N);
   const pObs = pneu.map(f => f.ok ? "3.00" : "NG"); while (pObs.length < N) pObs.push("—");
   lines.push({ no: 4, desc: "Working Pressure (Pneumatic)", spec: "2.5 Kgf/cm² Min.", instr: "AIR COMRESSOR", obs: pObs, remark: !pneu.length ? "—" : (pneu.every(f => f.ok) ? "Ok" : "Not OK"), ok: pneu.length ? pneu.every(f => f.ok) : null });
-  lines.push(numLine(5, "Fitting Load Test", "55~70 KgF @20 Minutes", "Tensile Machine", pdirReadings(rows, "Fitting Load Test (P120)", "120", vo), r => pdirNum(r.n), r => !r.fail && r.n >= 55));
+  lines.push(numLine(5, "Fitting Load Test", PDIR_FIT_MIN + " KgF Min. @20 Minutes", "Tensile Machine", pdirReadings(rows, "Fitting Load Test (P120)", "120", vo), r => pdirNum(r.n), r => r.n >= PDIR_FIT_MIN));
   let tens = pdirReadings(rows, "Tensile (P030)", "030", vo);
   if (!tens.length && data.baseRows && data.baseRows.length) tens = pdirReadings(data.baseRows, "Tensile (P030)", "030", vo);
   lines.push(numLine(6, "Rubber Tensile", "≤35", "Tensile Machine", tens, r => pdirNum(r.n), r => !r.fail));
