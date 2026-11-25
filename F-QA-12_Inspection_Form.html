@@ -5510,8 +5510,8 @@ function pdirCompute(details, data) {
     return { no, desc, spec, instr, obs, remark: !pick.length ? "—" : (pick.every(f => f.ok) ? "Ok" : "Not OK"), ok: pick.length ? pick.every(f => f.ok) : null };
   };
   const lines = [];
-  lines.push(numLine(1, "Working Pressure (Hydro-Pneumatic)", "15 Kgf/cm² Min.", "Hydronumetic Tester", pdirReadings(rows, "Pressure Testing (P120)", "120", vo), r => pdirNum(r.n), r => !r.fail && r.n >= 15));
-  // Length spec is fixed at > 455 mm on every PDIR.
+  lines.push(numLine(1, "Working Pressure (Hydro-Pneumatic)", "15 Kgf/cm² Min.", "Hydronumetic Tester", pdirReadings(rows, "Pressure Testing (P120)", "120", vo), r => String(Math.round(r.n)), r => !r.fail && r.n >= 15));
+  // Length spec is fixed at ≥ 455 mm on every PDIR.
   // Length: readings in order are split into five groups; each column is the mean of its group (+ both nuts).
   const lenR = pdirReadings(rows, "Length", "090", vo), lenObs = [], lenMeans = [];
   if (lenR.length) {
@@ -5520,13 +5520,13 @@ function pdirCompute(details, data) {
       const a = Math.floor(i * lenR.length / g), b = Math.floor((i + 1) * lenR.length / g);
       const grp = lenR.slice(a, Math.max(b, a + 1));
       const m = grp.reduce((s, r) => s + r.n, 0) / grp.length + 2 * nut;
-      lenMeans.push(m); lenObs.push(pdirNum(m));
+      lenMeans.push(m); lenObs.push(String(Math.round(m)));
     }
   }
   while (lenObs.length < N) lenObs.push("—");
-  const lenOk = lenR.length ? lenMeans.every(m => m > 455) && lenR.every(r => r.n + 2 * nut > 455) : null;
-  lines.push({ no: 2, desc: "Length", spec: "> 455 mm", instr: "Measuring Scale", obs: lenObs, remark: lenOk === null ? "—" : lenOk ? "Ok" : "Not OK", ok: lenOk });
-  lines.push(numLine(3, "Air Drop Leakage Test", "5 Kgf/cm² Min.", "Line Testing Machine", pdirReadings(rows, "Air Leakage (P120)", "120", vo), r => pdirNum(r.n), r => !r.fail && r.n >= 5));
+  const lenOk = lenR.length ? lenMeans.every(m => m >= 455 - 1e-9) && lenR.every(r => r.n + 2 * nut >= 455 - 1e-9) : null;
+  lines.push({ no: 2, desc: "Length", spec: "≥ 455 mm", instr: "Measuring Scale", obs: lenObs, remark: lenOk === null ? "—" : lenOk ? "Ok" : "Not OK", ok: lenOk });
+  lines.push(numLine(3, "Air Drop Leakage Test", "5 Kgf/cm² Min.", "Line Testing Machine", pdirReadings(rows, "Air Leakage (P120)", "120", vo), r => r.n.toFixed(2), r => !r.fail && r.n >= 5));
   // Working pressure (pneumatic) always reads 3.00 Kgf/cm² (the set point) in all five columns, Ok.
   lines.push({ no: 4, desc: "Working Pressure (Pneumatic)", spec: "2.5 Kgf/cm² Min.", instr: "AIR COMRESSOR",
     obs: Array(N).fill("3.00"), remark: "Ok", ok: true });
@@ -5541,7 +5541,7 @@ function pdirCompute(details, data) {
       const a = Math.floor(i * fit.length / g), b = Math.floor((i + 1) * fit.length / g);
       const grp = fit.slice(a, Math.max(b, a + 1));
       const m = grp.reduce((s, r) => s + r.n, 0) / grp.length;
-      fitMeans.push(m); fitObs.push(pdirNum(m));
+      fitMeans.push(m); fitObs.push(String(Math.round(m)));
     }
   }
   while (fitObs.length < N) fitObs.push("—");
