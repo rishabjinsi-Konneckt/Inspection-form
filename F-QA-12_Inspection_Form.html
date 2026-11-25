@@ -5612,7 +5612,7 @@ function pdirCompute(details, data) {
     obs: fitObs, remark: fitOk === null ? "—" : fitOk ? "Ok" : "Not OK", ok: fitOk });
   let tens = pdirReadings(rows, "Tensile (P030)", "030", vo);
   if (!tens.length && data.baseRows && data.baseRows.length) tens = pdirReadings(data.baseRows, "Tensile (P030)", "030", vo);
-  lines.push(numLine(6, "Rubber Tensile", "≤35", "Tensile Machine", tens, r => pdirNum(r.n), r => r.n >= 35 && r.n <= 52));   // judged on the number only (35–52), saved fail marks ignored
+  lines.push(numLine(6, "Rubber Tensile", "≥ 35", "Tensile Machine", tens, r => pdirNum(r.n), r => r.n >= 35));   // judged on the number only (35 minimum, no upper limit), saved fail marks ignored
   lines.push({ no: 7, desc: "Color", spec: "Grey", instr: "Visually", obs: Array(N).fill("Ok"), remark: "Ok", ok: true });
   lines.push(flagLine(8, "Appearance", "Loose Fitting, Wire Cut, Black spot on Fittings not allowed", "Visually", pdirFlags(rows, "Appearance (P130)", "130", vo), "Ok", "NG"));
   const accepted = lines.every(l => l.ok === true);
