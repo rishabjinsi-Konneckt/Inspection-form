@@ -5414,7 +5414,12 @@ function pdirDefaults(base, product) {
 function pdirDetails(base, product) {
   return { ...pdirDefaults(base, product), ...(pdirSaved()[base] || {}) };
 }
-function openPdir(base) { S.pdirBase = base; S.pdirOpen = false; S.screen = "pdirform"; render(); }
+function openPdir(base) {
+  S.pdirBase = base; S.pdirOpen = false;
+  // A batch whose FINAL PDIR was already made opens straight to that single printable sheet.
+  if ((pdirSaved()[base] || {}).final) { S.screen = "pdir"; render(); loadPdirData(base); return; }
+  S.screen = "pdirform"; render();
+}
 // PDIR for a batch that is still open (Continue Existing Batch): uses the readings verified so far.
 function pdirOpenClicked() {
   const base = S.selectedBatch;
@@ -5443,6 +5448,12 @@ function pdirGenerate() {
   if (!(parseFloat(d.nutMm) > 0)) { alert("Enter the nut length in mm (needed for the Length line)."); return; }
   if (!(parseFloat(d.lenMin) > 0)) { alert("Enter the minimum length spec in mm."); return; }
   if (S.pdirOpen && !d.invoice) { alert("Enter the invoice number (this batch is not closed yet, so it has none on file)."); return; }
+  if (!S.pdirOpen) {
+    // Closed batch: is this the last dispatch? Final → next time the PDIR button opens this one sheet directly.
+    const more = confirm("Will this batch have MORE dispatches in future?\n\nOK = Yes, more dispatches will follow (the form stays available for the next one).\nCancel = No, this is the FINAL PDIR (the PDIR button will open this single printable sheet).");
+    const all = pdirSaved(); all[base] = { ...(all[base] || d), final: !more };
+    try { localStorage.setItem(PDIR_STORE, JSON.stringify(all)); } catch (e) {}
+  }
   S.screen = "pdir"; render();
   loadPdirData(base);
 }
