@@ -3107,7 +3107,7 @@ function allEntryKeys() {
 function render() {
   if (!LOGIN_USER) { if (!document.getElementById("login-card")) paintLogin(); return; }   // nothing is reachable before sign-in
   const fns = { setup:rSetup, process:rProcess, review:rReview, submitted:rSubmitted, report:rReport, log:rLog, logdetail:rLogDetail,
-    batchreport:rBatchReport, finalsheet:rFinalSheet, pdirform:rPdirForm, pdir:rPdir, editpick:rEditPick, paused:rPaused, vrpin:rVrPin, vrname:rVrName, vrlist:rVrList, vrdetail:rVrDetail };
+    batchreport:rBatchReport, finalsheet:rFinalSheet, finished:rFinished, pdirform:rPdirForm, pdir:rPdir, editpick:rEditPick, paused:rPaused, vrpin:rVrPin, vrname:rVrName, vrlist:rVrList, vrdetail:rVrDetail };
   // Save BEFORE painting, so that if the save fails this very paint can say so.
   saveState();
   document.getElementById("app").innerHTML = saveWarning() + fns[S.screen]();
@@ -5257,7 +5257,12 @@ function closedBatchGroups() {
 }
 function groupInvoice(rows) { const r = rows.find(x => !isBlankCell(x["Invoice No."])); return r ? String(r["Invoice No."]) : ""; }
 
-function closedBatchesHtml() {
+function rFinished() {
+  return `<div class="header"><h1>✅ Finished batches</h1></div>
+    <button class="btn-outline" onclick="S.screen='setup';S.finOpen='';render()">← Back</button>
+    <div style="margin-top:10px;">${closedBatchesHtml("finished")}</div>`;
+}
+function closedBatchesHtml(mode) {
   const groups = closedBatchGroups();
   const bases = Object.keys(groups).sort((a, b) => String(groups[b][0]["Closed At"] || "").localeCompare(String(groups[a][0]["Closed At"] || "")));
   if (!bases.length) return "";
@@ -5266,8 +5271,15 @@ function closedBatchesHtml() {
     const inv = groupInvoice(rows);
     const label = (PRODUCTS[f.Product] && PRODUCTS[f.Product].label) || f.Product || "";
     const closedOn = (f["Closed At"] || "").slice(0, 10);
-    return `<div style="border:1.5px solid ${finished ? "#bbf7d0" : "#fed7aa"};border-radius:12px;padding:10px 12px;margin-bottom:8px;background:${finished ? "#f0fdf4" : "#fff7ed"};">
-      <div style="display:flex;justify-content:space-between;gap:8px;"><div style="font-weight:700;font-size:14px;">${label}</div><div style="font-size:11px;color:#64748b;">${b}</div></div>
+    if (finished && S.finOpen !== b) {
+      // Compact one-line row; tap to open the details and buttons.
+      const res = f["Report Result"] ? `<span style="font-weight:700;color:${f["Report Result"] === "APPROVED" ? "#15803d" : "#b91c1c"};">${htmlText(f["Report Result"])}</span> · ` : "";
+      return `<div onclick="S.finOpen='${esc(b)}';render()" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px;border:1px solid #bbf7d0;border-radius:10px;padding:9px 12px;margin-bottom:6px;background:#f0fdf4;">
+        <div style="min-width:0;"><div style="font-weight:700;font-size:14px;">${label}</div><div style="font-size:11px;color:#64748b;">${res}closed ${closedOn} · ${htmlText(inv)}</div></div>
+        <div style="font-size:16px;color:#64748b;">▾</div></div>`;
+    }
+    return `<div ${finished ? `onclick="if(event.target===this||event.target.closest('[data-fhead]')){S.finOpen='';render()}"` : ""} style="border:1.5px solid ${finished ? "#bbf7d0" : "#fed7aa"};border-radius:12px;padding:10px 12px;margin-bottom:8px;background:${finished ? "#f0fdf4" : "#fff7ed"};">
+      <div ${finished ? "data-fhead " : ""}style="display:flex;justify-content:space-between;gap:8px;${finished ? "cursor:pointer;" : ""}"><div style="font-weight:700;font-size:14px;">${label}${finished ? " ▴" : ""}</div><div style="font-size:11px;color:#64748b;">${b}</div></div>
       <div style="font-size:12px;color:#64748b;margin-top:2px;">${f["Days Worked"] || "?"} day(s) · closed ${closedOn} by ${f["Closed By"] || "—"}</div>
       <div style="margin-top:6px;font-size:12px;font-weight:700;color:${finished ? "#15803d" : "#c2410c"};">${finished ? "Invoice " + inv + " · PDIR ready" : "Invoice number missing"}</div>
       ${f["Report Result"] ? `<div style="margin-top:3px;font-size:11px;font-weight:700;color:${f["Report Result"] === "APPROVED" ? "#15803d" : "#b91c1c"};">${htmlText(f["Report Result"])} · prepared ${htmlText(finalSignInfo(f).prep || "—")} · verified ${htmlText(finalSignInfo(f).ver || "—")}</div>` : ""}
@@ -5285,6 +5297,7 @@ function closedBatchesHtml() {
   };
   const waiting  = bases.filter(b => !groupInvoice(groups[b]));
   const finished = bases.filter(b => groupInvoice(groups[b]));
+  if (mode === "finished") return finished.length ? finished.map(b => card(b, true)).join("") : `<div class="card" style="text-align:center;color:#64748b;">No finished batches yet.</div>`;
   return `
     ${waiting.length ? `<div class="card">
       <div style="font-weight:700;font-size:15px;margin-bottom:4px;">🧾 Closed — awaiting invoice</div>
@@ -5292,8 +5305,8 @@ function closedBatchesHtml() {
       ${waiting.map(b => card(b, false)).join("")}
     </div>` : ""}
     ${finished.length ? `<div class="card">
-      <div style="font-weight:700;font-size:15px;margin-bottom:8px;">✅ Finished batches</div>
-      ${finished.map(b => card(b, true)).join("")}
+      <div onclick="S.finOpen='';S.screen='finished';render()" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;font-weight:700;font-size:15px;">
+        <span>✅ Finished batches (${finished.length})</span><span style="color:#64748b;">Open →</span></div>
     </div>` : ""}`;
 }
 
