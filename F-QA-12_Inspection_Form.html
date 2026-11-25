@@ -5597,6 +5597,10 @@ function rPdir() {
   const res = pdirCompute(d, dd);
   const inv = ctx.closed ? ctx.inv : (d.invoice || "");
   const sg = ctx.closed ? effFinalSign(f, base) : { prep: topPerson(dd.rows, "Device ID"), ver: topPerson(dd.rows, "Verified By") };
+  // Prepared-by time = when the last sheet of this batch was filled; Checked-by is stamped (with the
+  // moment of generation) only when the Admin generates the report.
+  const lastFilledAt = (dd.rows || []).map(r => new Date(r["Last Saved At"] || "")).filter(d => !isNaN(d)).sort((a, b) => b - a).map(d => d.toISOString())[0] || "";
+  const isAdminGen = LOGIN_USER === ADMIN_NAME;
   const dispDate = (() => { const m = String(d.date).match(/^(\d{4})-(\d{2})-(\d{2})$/); if (!m) return d.date; return `${parseInt(m[3], 10)} ${["January","February","March","April","May","June","July","August","September","October","November","December"][parseInt(m[2], 10) - 1]} ${m[1]}`; })();
   const accents = ["#0ea5e9", "#f59e0b", "#8b5cf6", "#14b8a6", "#ec4899", "#f97316", "#64748b", "#22c55e"];
   const tint = ["#e0f2fe", "#fef3c7", "#ede9fe", "#ccfbf1", "#fce7f3", "#ffedd5", "#f1f5f9", "#dcfce7"];
@@ -5628,8 +5632,8 @@ function rPdir() {
       <tbody>${rowsHtml}</tbody>
     </table>
     <div class="pd-sign">
-      <div>${sg.prep ? `<b class="pd-sig">${htmlText(sg.prep)}</b>` : ""}<span>PREPARED BY</span></div>
-      <div>${sg.ver ? `<b class="pd-sig">${htmlText(sg.ver)}</b>` : ""}<span>CHECKED BY</span></div>
+      <div>${sg.prep ? `<b class="pd-sig">${htmlText(sg.prep)}</b><em class="pd-sigat">✔ Digitally signed · ${htmlText(ddmmyyyyTime(lastFilledAt || sg.prepAt || "") || "")}</em>` : ""}<span>PREPARED BY</span></div>
+      <div>${sg.ver && isAdminGen ? `<b class="pd-sig">${htmlText(sg.ver)}</b><em class="pd-sigat">✔ Digitally signed · ${htmlText(ddmmyyyyTime(new Date().toISOString()) || "")}</em>` : ""}<span>CHECKED BY</span></div>
       <div><b class="pd-final ${res.accepted ? "pd-pass" : res.rejected ? "pd-fail" : "pd-na"}">${res.accepted ? "ACCEPTED" : res.rejected ? "REJECTED" : "PENDING"}</b><span>ACCEPTED / REJECTED</span></div>
     </div>
     ${ctx.closed ? "" : `<div class="pd-open">Batch still open - readings verified upto ${htmlText(new Date().toLocaleDateString("en-GB").replace(/\//g, "-"))}</div>`}
@@ -5658,7 +5662,8 @@ function rPdir() {
       .pd-sign{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:26px;}
       .pd-sign div{height:50px;border-bottom:1.5px solid #94a3b8;position:relative;}
       .pd-sign span{position:absolute;bottom:-17px;left:0;font-size:11px;font-weight:700;color:#475569;letter-spacing:.5px;}
-      .pd-sig{position:absolute;left:4px;bottom:6px;font:italic 22px "Snell Roundhand","Segoe Script","Brush Script MT","Lucida Handwriting",cursive;color:#1e3a8a;}
+      .pd-sigat{position:absolute;left:4px;bottom:2px;font-style:normal;font-size:8px;font-weight:600;color:#15803d;white-space:nowrap;}
+      .pd-sig{position:absolute;left:4px;bottom:14px;font:italic 22px "Snell Roundhand","Segoe Script","Brush Script MT","Lucida Handwriting",cursive;color:#1e3a8a;}
       .pd-final{position:absolute;right:0;bottom:6px;padding:3px 14px;border-radius:6px;font-size:16px;letter-spacing:1px;}
       @page pdir{size:A4 portrait;margin:7mm;}
       @page{size:A4 portrait;margin:7mm;}
