@@ -5268,7 +5268,7 @@ function closedBatchesHtml(mode) {
   if (!bases.length) return "";
   const card = (b, finished) => {
     const rows = groups[b], f = rows[0];
-    const inv = groupInvoice(rows);
+    const inv = groupInvoice(rows), invs = invoiceList(rows);
     const label = (PRODUCTS[f.Product] && PRODUCTS[f.Product].label) || f.Product || "";
     const closedOn = (f["Closed At"] || "").slice(0, 10);
     if (finished && S.finOpen !== b) {
@@ -5286,14 +5286,17 @@ function closedBatchesHtml(mode) {
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
         ${finished
           ? `<button class="btn-outline" style="width:auto;flex:1;margin:0;padding:9px 6px;font-size:12px;" onclick="openFinalSheet('${esc(b)}')">📄 View final sheet</button>
-             <button class="btn-outline" style="width:auto;flex:1;margin:0;padding:9px 6px;font-size:12px;background:#ecfeff;color:#0e7490;border-color:#06b6d4;" onclick="openPdir('${esc(b)}')">📋 PDIR</button>
+             ${invs.length > 1 ? "" : `<button class="btn-outline" style="width:auto;flex:1;margin:0;padding:9px 6px;font-size:12px;background:#ecfeff;color:#0e7490;border-color:#06b6d4;" onclick="openPdir('${esc(b)}')">📋 PDIR</button>`}
              <button class="btn-outline" style="width:auto;flex:1;margin:0;padding:9px 6px;font-size:12px;" onclick="invoiceClicked('${esc(b)}')">✎ Edit invoice (Admin)</button>
+             ${LOGIN_USER === ADMIN_NAME ? `<button class="btn-outline" style="width:auto;flex:1;margin:0;padding:9px 6px;font-size:12px;background:#f5f3ff;color:#6d28d9;border-color:#8b5cf6;" onclick="addInvoiceClicked('${esc(b)}')">➕ Add invoice</button>` : ""}
              ${LOGIN_USER === ADMIN_NAME ? `<button class="btn-outline" style="width:auto;flex:1;margin:0;padding:9px 6px;font-size:12px;background:#fff7ed;color:#c2410c;border-color:#f97316;" onclick="reopenBatchClicked('${esc(b)}')">↩ Reopen (Admin)</button>` : ""}`
           : `<button class="btn-primary" style="width:auto;flex:1.4;margin:0;padding:9px 6px;font-size:12px;" onclick="invoiceClicked('${esc(b)}')">Enter invoice number</button>
              <button class="btn-outline" style="width:auto;flex:1;margin:0;padding:9px 6px;font-size:12px;" onclick="openFinalSheet('${esc(b)}')">📄 View final sheet</button>
              <button class="btn-outline" style="width:auto;flex:1;margin:0;padding:9px 6px;font-size:12px;background:#ecfeff;color:#0e7490;border-color:#06b6d4;" onclick="openPdir('${esc(b)}')">📋 PDIR</button>
              ${LOGIN_USER === ADMIN_NAME ? `<button class="btn-outline" style="width:auto;flex:1;margin:0;padding:9px 6px;font-size:12px;background:#fff7ed;color:#c2410c;border-color:#f97316;" onclick="reopenBatchClicked('${esc(b)}')">↩ Reopen (Admin)</button>` : ""}`}
-      </div></div>`;
+      </div>
+      ${finished && invs.length > 1 ? `<div style="margin-top:8px;border-top:1px dashed #86efac;padding-top:6px;">${invs.map((iv, i) => `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 2px;"><div style="font-size:13px;font-weight:700;color:#15803d;">Invoice ${i + 1}: ${htmlText(iv)}</div><button class="btn-outline" style="width:auto;margin:0;padding:7px 14px;font-size:12px;background:#ecfeff;color:#0e7490;border-color:#06b6d4;" onclick="openPdir('${esc(b)}','${esc(iv)}')">📋 PDIR</button></div>`).join("")}</div>` : ""}
+      </div>`;
   };
   const waiting  = bases.filter(b => !groupInvoice(groups[b]));
   const finished = bases.filter(b => groupInvoice(groups[b]));
@@ -5384,6 +5387,38 @@ async function invoiceClicked(base) {
 }
 
 
+// Admin adds one more invoice to a finished batch (a batch can be dispatched on several invoices).
+// They are kept together, comma-separated, in the batch's Invoice No. cell.
+async function addInvoiceClicked(base) {
+  const name = LOGIN_USER;
+  if (name !== ADMIN_NAME) { alert("Only Admin can add an invoice."); return; }
+  try {
+    const rows = (closedBatchGroups()[base] || []);
+    if (!rows.length) { alert("This batch wasn't found in Final Reports."); return; }
+    const list = invoiceList(rows);
+    const entered = prompt(`Invoices so far: ${list.join(", ") || "none"}\n\nNew invoice number to ADD for ${base}:`, "");
+    if (entered === null) return;
+    const inv = entered.trim();
+    if (!inv) { alert("Invoice number can't be blank."); return; }
+    if (inv.length > 40) { alert("Invoice number is too long (40 characters max)."); return; }
+    if (list.some(x => x.toLowerCase() === inv.toLowerCase())) { alert(`Invoice ${inv} is already on this batch.`); return; }
+    const joined = [...list, inv].join(", ");
+    const c0 = FINAL_HEADERS.indexOf("Invoice No.");
+    const stamp = new Date().toISOString();
+    showBusy("Adding invoice…");
+    for (const r of rows) {
+      await sheetApi({ mode: "update", range: `${quoteTab(FINAL_TAB)}!${colLetter(c0 + 1)}${r.__row}:${colLetter(c0 + 3)}${r.__row}`, rows: [[joined, name, stamp]] });
+    }
+    hideBusy();
+    alert(`Invoice ${inv} added to ${base}.`);
+  } catch (e) {
+    hideBusy();
+    alert("Couldn't add the invoice: " + (e && e.message ? e.message : e));
+  } finally {
+    refreshSheetBatches();
+  }
+}
+
 // ═══════════════════════════════════════════════
 // PDIR — Pre-Dispatch Inspection Report (F-QA-03), built from a CLOSED batch.
 // Eight lines, each with 5 observations picked evenly across the batch's real daily readings:
@@ -5411,20 +5446,23 @@ function pdirDefaults(base, product) {
   return { customer: "", partName: "", partNo: "", qty: "", date: today(), invoice: "",
     nutMm: nut === null ? "" : String(nut), lenMin: (lo && nut !== null) ? String(Math.round(lo.lo + 2 * nut)) : "" };
 }
+// Each invoice of a batch has its own saved PDIR details (key "batch|invoice"); a single-invoice batch uses the batch key.
+function pdirKey(base) { return S.pdirInv ? base + "|" + S.pdirInv : base; }
+function invoiceList(rows) { return String(groupInvoice(rows) || "").split(/[,;]+/).map(s => s.trim()).filter(Boolean); }
 function pdirDetails(base, product) {
-  return { ...pdirDefaults(base, product), ...(pdirSaved()[base] || {}) };
+  return { ...pdirDefaults(base, product), ...(pdirSaved()[pdirKey(base)] || {}) };
 }
-function openPdir(base) {
-  S.pdirBase = base; S.pdirOpen = false;
+function openPdir(base, inv) {
+  S.pdirBase = base; S.pdirOpen = false; S.pdirInv = inv || "";
   // A batch whose FINAL PDIR was already made opens straight to that single printable sheet.
-  if ((pdirSaved()[base] || {}).final) { S.screen = "pdir"; render(); loadPdirData(base); return; }
+  if ((pdirSaved()[pdirKey(base)] || {}).final) { S.screen = "pdir"; render(); loadPdirData(base); return; }
   S.screen = "pdirform"; render();
 }
 // PDIR for a batch that is still open (Continue Existing Batch): uses the readings verified so far.
 function pdirOpenClicked() {
   const base = S.selectedBatch;
   if (!base) { alert("Select a batch from the list first."); return; }
-  S.pdirBase = base; S.pdirOpen = true; S.screen = "pdirform"; render();
+  S.pdirBase = base; S.pdirOpen = true; S.pdirInv = ""; S.screen = "pdirform"; render();
 }
 // Product / invoice for the PDIR, whether the batch is closed (Final Reports row) or still open.
 function pdirContext(base) {
@@ -5437,7 +5475,7 @@ function pdirContext(base) {
 function pdirFormSave(base) {
   const val = id => { const el = document.getElementById(id); return el ? String(el.value || "").trim() : ""; };
   const d = { customer: val("pd-customer"), partName: val("pd-part"), partNo: val("pd-partno"), qty: val("pd-qty"), date: val("pd-date"), invoice: val("pd-invoice"), nutMm: val("pd-nut"), lenMin: val("pd-lenmin") };
-  const all = pdirSaved(); all[base] = d;
+  const all = pdirSaved(); all[pdirKey(base)] = d;
   try { localStorage.setItem(PDIR_STORE, JSON.stringify(all)); } catch (e) {}
   return d;
 }
@@ -5451,7 +5489,7 @@ function pdirGenerate() {
   if (!S.pdirOpen) {
     // Closed batch: is this the last dispatch? Final → next time the PDIR button opens this one sheet directly.
     const more = confirm("Will this batch have MORE dispatches in future?\n\nOK = Yes, more dispatches will follow (the form stays available for the next one).\nCancel = No, this is the FINAL PDIR (the PDIR button will open this single printable sheet).");
-    const all = pdirSaved(); all[base] = { ...(all[base] || d), final: !more };
+    const all = pdirSaved(); all[pdirKey(base)] = { ...(all[pdirKey(base)] || d), final: !more };
     try { localStorage.setItem(PDIR_STORE, JSON.stringify(all)); } catch (e) {}
   }
   S.screen = "pdir"; render();
@@ -5599,7 +5637,7 @@ function rPdirForm() {
       ${inp("pd-partno", "Part no.", d.partNo)}
       ${inp("pd-qty", "Dispatch qty (e.g. 7000EA)", d.qty)}
       ${inp("pd-date", "Dispatch date", d.date, "date")}
-      ${inp("pd-invoice", ctx.closed ? "Invoice no. (the batch's invoice — change it for a new dispatch)" : "Invoice no.", d.invoice || (ctx.closed ? ctx.inv : ""))}
+      ${inp("pd-invoice", ctx.closed ? "Invoice no. (the batch's invoice — change it for a new dispatch)" : "Invoice no.", d.invoice || (ctx.closed ? (S.pdirInv || ctx.inv) : ""))}
       ${inp("pd-nut", "Nut length (mm) — from the product code", d.nutMm, "number")}
       ${inp("pd-lenmin", "Minimum length spec (mm)", d.lenMin, "number")}
       <button class="btn-primary" onclick="pdirGenerate()">Generate PDIR →</button>
@@ -5619,7 +5657,7 @@ function rPdir() {
   if (dd.error) return `<div class="header"><h1>📋 PDIR</h1></div><div class="alert">⚠ ${htmlText(dd.error)}</div><button class="btn-primary no-print" onclick="loadPdirData('${esc(base)}')">Try again</button>${back}`;
   const d = pdirDetails(base, f.Product);
   const res = pdirCompute(d, dd);
-  const inv = ctx.closed ? (d.invoice || ctx.inv) : (d.invoice || "");
+  const inv = ctx.closed ? (d.invoice || S.pdirInv || ctx.inv) : (d.invoice || "");
   const sg = ctx.closed ? effFinalSign(f, base) : { prep: topPerson(dd.rows, "Device ID"), ver: topPerson(dd.rows, "Verified By") };
   // Prepared-by time = when the last sheet of this batch was filled; Checked-by is stamped (with the
   // moment of generation) only when the Admin generates the report.
