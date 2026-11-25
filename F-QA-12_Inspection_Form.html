@@ -5574,7 +5574,7 @@ function pdirCompute(details, data) {
     obs: fitObs, remark: fitOk === null ? "—" : fitOk ? "Ok" : "Not OK", ok: fitOk });
   let tens = pdirReadings(rows, "Tensile (P030)", "030", vo);
   if (!tens.length && data.baseRows && data.baseRows.length) tens = pdirReadings(data.baseRows, "Tensile (P030)", "030", vo);
-  lines.push(numLine(6, "Rubber Tensile", "≤35", "Tensile Machine", tens, r => pdirNum(r.n), r => !r.fail));
+  lines.push(numLine(6, "Rubber Tensile", "≤35", "Tensile Machine", tens, r => pdirNum(r.n), r => r.n >= 35 && r.n <= 52));   // judged on the number only (35–52), saved fail marks ignored
   lines.push({ no: 7, desc: "Color", spec: "Grey", instr: "Visually", obs: Array(N).fill("Ok"), remark: "Ok", ok: true });
   lines.push(flagLine(8, "Appearance", "Loose Fitting, Wire Cut, Black spot on Fittings not allowed", "Visually", pdirFlags(rows, "Appearance (P130)", "130", vo), "Ok", "NG"));
   const accepted = lines.every(l => l.ok === true);
@@ -5599,7 +5599,7 @@ function rPdirForm() {
       ${inp("pd-partno", "Part no.", d.partNo)}
       ${inp("pd-qty", "Dispatch qty (e.g. 7000EA)", d.qty)}
       ${inp("pd-date", "Dispatch date", d.date, "date")}
-      ${ctx.closed ? "" : inp("pd-invoice", "Invoice no.", d.invoice)}
+      ${inp("pd-invoice", ctx.closed ? "Invoice no. (the batch's invoice — change it for a new dispatch)" : "Invoice no.", d.invoice || (ctx.closed ? ctx.inv : ""))}
       ${inp("pd-nut", "Nut length (mm) — from the product code", d.nutMm, "number")}
       ${inp("pd-lenmin", "Minimum length spec (mm)", d.lenMin, "number")}
       <button class="btn-primary" onclick="pdirGenerate()">Generate PDIR →</button>
@@ -5619,7 +5619,7 @@ function rPdir() {
   if (dd.error) return `<div class="header"><h1>📋 PDIR</h1></div><div class="alert">⚠ ${htmlText(dd.error)}</div><button class="btn-primary no-print" onclick="loadPdirData('${esc(base)}')">Try again</button>${back}`;
   const d = pdirDetails(base, f.Product);
   const res = pdirCompute(d, dd);
-  const inv = ctx.closed ? ctx.inv : (d.invoice || "");
+  const inv = ctx.closed ? (d.invoice || ctx.inv) : (d.invoice || "");
   const sg = ctx.closed ? effFinalSign(f, base) : { prep: topPerson(dd.rows, "Device ID"), ver: topPerson(dd.rows, "Verified By") };
   // Prepared-by time = when the last sheet of this batch was filled; Checked-by is stamped (with the
   // moment of generation) only when the Admin generates the report.
